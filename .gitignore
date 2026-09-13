@@ -1,0 +1,9 @@
+﻿.env
+build/
+bin/
+*.exe
+*.o
+*.obj
+*.log
+__pycache__/
+*.pyc
