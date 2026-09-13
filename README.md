@@ -1,4 +1,4 @@
-﻿# Micro-ActInf: Ultra-Lightweight (20KB) Zero-Allocation Discrete Active Inference & Variational POMDP State Filter
+# Micro-ActInf: Ultra-Lightweight (20KB) Zero-Allocation Discrete Active Inference & Variational POMDP State Filter
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 [![Standard](https://img.shields.io/badge/Standard-C11%20MISRA--C-blue.svg)]()
@@ -50,16 +50,21 @@ $$\boldsymbol{\pi}_{t+1} = \sigma(-\gamma \mathbf{G})$$
 
 ---
 
-## 📊 Benchmark & Performance Audit
+## 📊 Benchmark & Hardware Specifications
 
-| Metric | Legacy Core (10,240-D HDC) | Micro-ActInf (C11 Core) | Improvement Factor |
-| :--- | :--- | :--- | :--- |
-| **BSS / Static Memory** | 31,142,272 Bytes (29.70 MB) | **21,248 Bytes (20.75 KB)** | **1,465x Lighter** |
-| **Peak Working Set** | 32.65 MB | **< 0.08 MB** | **408x Reduction** |
-| **Decision Latency** | ~140 µs (with unvectorized logs) | **1.677 µs** | **83x Faster** |
-| **Throughput** | ~7,100 decisions/sec | **596,422 decisions/sec** | **84x Higher** |
-| **Dynamic Allocations** | Multiple allocations | **0 (Zero-malloc)** | **Deterministic Real-Time** |
-| **Mathematical Soundness**| Metaphorical rules / Eliza `strstr` | **Exact Variational POMDP** | **Provable Convergence** |
+Empirically verified on x86_64 host (C11, GCC `-O3`):
+
+| Metric | Specification | Verification Method |
+| :--- | :--- | :--- |
+| **Memory Footprint (Static RAM)** | **21,248 Bytes (20.75 KB)** | BSS / Structure sizeof (`sizeof(micro_actinf_t)`) |
+| **Heap Memory Allocations** | **0 Bytes (Zero-malloc)** | 100% Static L1/L2 cache resident |
+| **Decision Cycle Latency** | **1.677 µs / step** | 100,000-cycle high-precision performance counter |
+| **Throughput** | **596,422 decisions / second** | Continuous closed-loop benchmark |
+| **State Space Capacity** | Up to 16 states, 32 observations, 8 actions | Configurable compile-time bounds |
+| **Mathematical Guarantee** | Invariant probability simplex ($\sum s_i = 1$) | Automated Kolmogorov unit test suite |
+| **Entropy Dynamics** | $> 70\%$ Shannon entropy collapse on evidence | Proven Bayesian belief convergence |
+| **Standards Compliance** | C11 Standard, MISRA-C compatible | Zero undefined behavior, deterministic bounds |
+
 
 ---
 
