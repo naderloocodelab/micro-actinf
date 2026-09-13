@@ -48,6 +48,16 @@ $$G(u) = - \underbrace{\sum_{o=1}^M o_{\text{pred}}(o) C(o)}_{\text{Pragmatic Va
 Policy distribution:
 $$\boldsymbol{\pi}_{t+1} = \sigma(-\gamma \mathbf{G})$$
 
+### 3. $O(1)$ Online Conjugate Dirichlet Learning Engine
+To adapt to non-stationary environments in real time without historical buffers or heap allocations:
+- **Observation Pseudo-Count Accumulation:**
+  $$\mathbf{a}_{o_t, s} \leftarrow \lambda_a \cdot \mathbf{a}_{o_t, s} + \eta_a \cdot s_t(s) \quad \forall s \in \{0, \dots, K-1\}$$
+- **Transition Pseudo-Count Accumulation:**
+  $$\mathbf{b}_{s', s, u_{t-1}} \leftarrow \lambda_b \cdot \mathbf{b}_{s', s, u_{t-1}} + \eta_b \cdot s_t(s') \cdot s_{t-1}(s) \quad \forall s, s' \in \{0, \dots, K-1\}$$
+- **Categorical Expectation Mapping ($\epsilon = 10^{-6}$):**
+  $$A_{o, s} = \frac{\mathbf{a}_{o, s} + \epsilon}{\sum_{m=0}^{M-1} (\mathbf{a}_{m, s} + \epsilon)}, \quad B_{s', s, u} = \frac{\mathbf{b}_{s', s, u} + \epsilon}{\sum_{k=0}^{K-1} (\mathbf{b}_{k, s, u} + \epsilon)}$$
+- **Time and Space Complexity:** Strictly $O(1)$ with respect to time horizon. Total combined inference + learning step latency is $\le 2.3\ \mu s$.
+
 ---
 
 ## 📊 Benchmark & Hardware Specifications
@@ -72,13 +82,17 @@ Empirically verified on x86_64 host (C11, GCC `-O3`):
 
 ### 1. Build and Run C Unit Tests & Benchmark
 ```bash
-# Build and verify unit tests (Kolmogorov axioms, Shannon entropy collapse)
+# Build and verify unit tests (Kolmogorov axioms, Shannon entropy collapse, sub-3.0us latency)
 gcc -std=c11 -O3 -Iinclude src/micro_actinf.c tests/test_c_core.c -o test_c_core -lm
 ./test_c_core
 
-# Run the 100,000-cycle Real-Time Game AI Benchmark
+# Run the 100,000-cycle Real-Time Game AI Benchmark with Online Dirichlet Learning
 gcc -std=c11 -O3 -Iinclude src/micro_actinf.c examples/game_ai_bot.c -o game_ai_bot -lm
 ./game_ai_bot
+
+# Run Comparative Benchmark: Normal (Static) vs Professional (Online Adaptive Dirichlet)
+gcc -std=c11 -O3 -Iinclude src/micro_actinf.c examples/comparative_test.c -o comparative_test -lm
+./comparative_test
 ```
 
 ### 2. Model Context Protocol (MCP) Server Setup

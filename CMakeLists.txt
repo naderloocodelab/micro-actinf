@@ -23,7 +23,12 @@ target_link_libraries(test_c_core PRIVATE micro_actinf)
 add_executable(game_ai_bot examples/game_ai_bot.c)
 target_link_libraries(game_ai_bot PRIVATE micro_actinf)
 
+# Comparative Benchmark Example (Normal vs Professional)
+add_executable(comparative_test examples/comparative_test.c)
+target_link_libraries(comparative_test PRIVATE micro_actinf)
+
 if(NOT MSVC)
     target_link_libraries(test_c_core PRIVATE m)
     target_link_libraries(game_ai_bot PRIVATE m)
+    target_link_libraries(comparative_test PRIVATE m)
 endif()

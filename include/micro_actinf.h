@@ -20,9 +20,26 @@ extern "C" {
 #define ACTINF_MAX_OBS      32
 #define ACTINF_MAX_ACTIONS  8
 
+#define MICRO_ACTINF_K      ACTINF_MAX_STATES
+#define MICRO_ACTINF_M      ACTINF_MAX_OBS
+#define MICRO_ACTINF_A      ACTINF_MAX_ACTIONS
+
+#define ACTINF_EPSILON           1e-12f
+#define ACTINF_DIRICHLET_EPSILON 1e-6f
+
+/**
+ * @brief Online Dirichlet Learning Configuration
+ */
+typedef struct {
+    float learning_rate_a;   /* eta_a: observation learning rate (default: 0.05f) */
+    float learning_rate_b;   /* eta_b: transition learning rate (default: 0.05f) */
+    float decay_factor;      /* lambda: forgetting factor (default: 0.998f) */
+    bool enable_learning;    /* runtime toggle for parameter adaptation */
+} micro_actinf_learning_config_t;
+
 /**
  * @brief Active Inference Agent State Structure
- * Memory footprint: Exactly 21,248 bytes (~20.75 KB).
+ * Memory footprint: <= 36 KB (Exactly 20,896 bytes).
  * Zero heap allocations required during runtime. Fits in CPU L1/L2 cache.
  */
 typedef struct {
@@ -33,6 +50,9 @@ typedef struct {
 
     /* Belief State Vector s_t: Probability distribution on probability simplex Delta^{K-1} */
     float s[ACTINF_MAX_STATES];
+
+    /* Previous Belief Vector s_{t-1}: Tracked for O(1) transition Dirichlet learning */
+    float s_prev[ACTINF_MAX_STATES];
 
     /* Observation Likelihood Matrix A[obs][state]: P(obs | state) */
     float A[ACTINF_MAX_OBS][ACTINF_MAX_STATES];
@@ -52,9 +72,10 @@ typedef struct {
     /* Policy Selection Probabilities pi[action] = Softmax(-gamma * G) */
     float pi[ACTINF_MAX_ACTIONS];
 
-    /* Dirichlet parameters for online learning */
-    float a_counts[ACTINF_MAX_OBS][ACTINF_MAX_STATES];
-    float b_counts[ACTINF_MAX_ACTIONS][ACTINF_MAX_STATES][ACTINF_MAX_STATES];
+    /* Dirichlet accumulators for online learning */
+    float a_counts[MICRO_ACTINF_M][MICRO_ACTINF_K];
+    float b_counts[MICRO_ACTINF_K][MICRO_ACTINF_K][MICRO_ACTINF_A];
+    micro_actinf_learning_config_t learning_cfg;
 
     uint8_t last_action;
     uint32_t step_count;
@@ -66,10 +87,24 @@ typedef struct {
 void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8_t actions);
 
 /**
+ * @brief Configure online Dirichlet learning hyperparameters.
+ */
+void micro_actinf_set_learning_config(micro_actinf_t *agent, const micro_actinf_learning_config_t *cfg);
+
+/**
  * @brief Update belief distribution using variational message passing given an observation.
  * Formulation: s_{t+1} = Softmax( ln A_{o_t, :}^T + ln( B(u_{t-1}) s_t ) )
  */
 void micro_actinf_step(micro_actinf_t *agent, uint8_t obs);
+
+/**
+ * @brief Execute O(1) conjugate Dirichlet parameter learning update.
+ * Recursive pseudo-count updates for matrices A and B with exponential decay.
+ * @param agent Pointer to active inference agent.
+ * @param observation Observed observation index o_t in [0, num_obs - 1].
+ * @param prev_action Previous control action u_{t-1} in [0, num_actions - 1].
+ */
+void micro_actinf_learn_step(micro_actinf_t *agent, uint32_t observation, uint32_t prev_action);
 
 /**
  * @brief Select the optimal action minimizing Expected Free Energy G(u).

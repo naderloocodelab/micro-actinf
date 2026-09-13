@@ -51,6 +51,11 @@ void micro_actinf_update_cache(micro_actinf_t *agent) {
     }
 }
 
+void micro_actinf_set_learning_config(micro_actinf_t *agent, const micro_actinf_learning_config_t *cfg) {
+    if (!agent || !cfg) return;
+    agent->learning_cfg = *cfg;
+}
+
 void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8_t actions) {
     if (!agent) return;
 
@@ -61,10 +66,17 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
     agent->last_action = 0;
     agent->step_count = 0;
 
-    /* Initialize uniform prior belief */
+    /* Initialize default online Dirichlet learning configuration */
+    agent->learning_cfg.learning_rate_a = 0.05f;
+    agent->learning_cfg.learning_rate_b = 0.05f;
+    agent->learning_cfg.decay_factor = 0.998f;
+    agent->learning_cfg.enable_learning = true;
+
+    /* Initialize uniform prior belief & previous belief */
     float p_s = 1.0f / (float)agent->num_states;
     for (uint8_t s = 0; s < agent->num_states; s++) {
         agent->s[s] = p_s;
+        agent->s_prev[s] = p_s;
     }
 
     /* Initialize observation likelihood matrix A with pseudo-counts */
@@ -78,7 +90,7 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
 
     micro_actinf_update_cache(agent);
 
-    /* Initialize transition matrices B with weak self-persistence */
+    /* Initialize transition matrices B with weak self-persistence & b_counts */
     for (uint8_t u = 0; u < agent->num_actions; u++) {
         for (uint8_t j = 0; j < agent->num_states; j++) {
             for (uint8_t i = 0; i < agent->num_states; i++) {
@@ -87,7 +99,7 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
                 } else {
                     agent->B[u][i][j] = 0.50f / (float)(agent->num_states - 1);
                 }
-                agent->b_counts[u][i][j] = 1.0f;
+                agent->b_counts[i][j][u] = 1.0f;
             }
         }
     }
@@ -106,26 +118,53 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
 void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
     if (!agent || obs >= agent->num_obs) return;
 
-    /* 1. Prior state prediction via previous action: s_prior = B(u_{t-1}) * s_t */
-    float s_prior[ACTINF_MAX_STATES] = {0.0f};
-    for (uint8_t i = 0; i < agent->num_states; i++) {
-        for (uint8_t j = 0; j < agent->num_states; j++) {
-            s_prior[i] += agent->B[agent->last_action][i][j] * agent->s[j];
+    const uint8_t n_states = agent->num_states;
+    const uint8_t last_act = agent->last_action;
+    float * restrict s = agent->s;
+    float * restrict s_prev = agent->s_prev;
+
+    /* Save previous belief vector s_{t-1} for O(1) online learning */
+    for (uint8_t i = 0; i < n_states; i++) {
+        s_prev[i] = s[i];
+    }
+
+    /* 1. Prior state prediction via previous action: s_prior = B(u_{t-1}) * s_{t-1} */
+    /* 2. Analytical Variational Bayes belief update:
+     *    s_{t+1} = Softmax( ln A_{o_t, :}^T + ln( B(u_{t-1}) s_t ) )
+     *            = (A_{o_t, :} \odot s_prior) / \sum (A_{o_t, :} \odot s_prior)
+     */
+    float sum = 0.0f;
+    float unnorm[ACTINF_MAX_STATES];
+    const float * restrict a_row = agent->A[obs];
+
+    for (uint8_t i = 0; i < n_states; i++) {
+        float s_prior = 0.0f;
+        const float * restrict b_row = agent->B[last_act][i];
+        for (uint8_t j = 0; j < n_states; j++) {
+            s_prior += b_row[j] * s_prev[j];
         }
+        float p = a_row[i] * s_prior;
+        unnorm[i] = p;
+        sum += p;
     }
 
-    /* 2. Variational Bayes belief update: ln(s) = ln(A[o, :]) + ln(s_prior) */
-    float log_posterior[ACTINF_MAX_STATES];
-    for (uint8_t i = 0; i < agent->num_states; i++) {
-        float likelihood = (agent->A[obs][i] > ACTINF_EPSILON) ? agent->A[obs][i] : ACTINF_EPSILON;
-        float prior = (s_prior[i] > ACTINF_EPSILON) ? s_prior[i] : ACTINF_EPSILON;
-        log_posterior[i] = logf(likelihood) + logf(prior);
-    }
-
-    /* 3. Normalize via Softmax */
-    softmax_inplace(log_posterior, agent->num_states);
-    for (uint8_t i = 0; i < agent->num_states; i++) {
-        agent->s[i] = log_posterior[i];
+    if (sum > ACTINF_EPSILON) {
+        float inv_sum = 1.0f / sum;
+        for (uint8_t i = 0; i < n_states; i++) {
+            s[i] = unnorm[i] * inv_sum;
+        }
+    } else {
+        /* Fallback: Log-space Softmax for extreme numerical boundary conditions */
+        float log_posterior[ACTINF_MAX_STATES];
+        for (uint8_t i = 0; i < n_states; i++) {
+            float likelihood = (a_row[i] > ACTINF_EPSILON) ? a_row[i] : ACTINF_EPSILON;
+            float prior = (unnorm[i] > ACTINF_EPSILON) ? unnorm[i] : ACTINF_EPSILON;
+            log_posterior[i] = logf(likelihood) + logf(prior);
+        }
+        softmax_inplace(log_posterior, n_states);
+        for (uint8_t i = 0; i < n_states; i++) {
+            s[i] = log_posterior[i];
+        }
     }
 
     agent->step_count++;
@@ -211,27 +250,89 @@ float micro_actinf_shannon_entropy(const micro_actinf_t *agent) {
     return h;
 }
 
+void micro_actinf_learn_step(micro_actinf_t *agent, uint32_t observation, uint32_t prev_action) {
+    if (!agent || observation >= (uint32_t)agent->num_obs || prev_action >= (uint32_t)agent->num_actions) return;
+    if (!agent->learning_cfg.enable_learning) return;
+
+    const float lambda_a = agent->learning_cfg.decay_factor;
+    const float lambda_b = agent->learning_cfg.decay_factor;
+    const float eta_a = agent->learning_cfg.learning_rate_a;
+    const float eta_b = agent->learning_cfg.learning_rate_b;
+    const uint8_t n_states = agent->num_states;
+    const uint8_t n_obs = agent->num_obs;
+
+    const float * restrict s = agent->s;
+    const float * restrict s_prev = agent->s_prev;
+
+    /* 1. Observation Pseudo-Count Update:
+     *    a_{o_t, s} <- lambda_a * a_{o_t, s} + eta_a * s_t(s)  \forall s in {0, ..., K-1}
+     */
+    float * restrict a_obs = agent->a_counts[observation];
+    for (uint8_t k = 0; k < n_states; k++) {
+        a_obs[k] = lambda_a * a_obs[k] + eta_a * s[k];
+    }
+
+    /* 2. Transition Pseudo-Count Update:
+     *    b_{s', s, u_{t-1}} <- lambda_b * b_{s', s, u_{t-1}} + eta_b * s_t(s') * s_{t-1}(s)  \forall s, s' in {0, ..., K-1}
+     */
+    for (uint8_t s_prime = 0; s_prime < n_states; s_prime++) {
+        const float eta_s_prime = eta_b * s[s_prime];
+        for (uint8_t k = 0; k < n_states; k++) {
+            agent->b_counts[s_prime][k][prev_action] = 
+                lambda_b * agent->b_counts[s_prime][k][prev_action] + eta_s_prime * s_prev[k];
+        }
+    }
+
+    /* 3. Expectation Mapping (Normalized Categorical):
+     *    A_{o, s} = (a_{o, s} + eps) / sum_{m=0}^{M-1} (a_{m, s} + eps)
+     *    B_{s', s, u} = (b_{s', s, u} + eps) / sum_{k=0}^{K-1} (b_{k, s, u} + eps)
+     *    (Pre-calculate inverse column sums to avoid divisions; enforce eps = 10^-6)
+     */
+    /* Matrix A expectation mapping: contiguous row traversal */
+    float col_sums_a[ACTINF_MAX_STATES] = {0.0f};
+    for (uint8_t m = 0; m < n_obs; m++) {
+        const float * restrict a_row = agent->a_counts[m];
+        for (uint8_t k = 0; k < n_states; k++) {
+            col_sums_a[k] += a_row[k];
+        }
+    }
+    const float eps_obs = (float)n_obs * ACTINF_DIRICHLET_EPSILON;
+    float inv_col_a[ACTINF_MAX_STATES];
+    for (uint8_t k = 0; k < n_states; k++) {
+        inv_col_a[k] = 1.0f / (col_sums_a[k] + eps_obs);
+    }
+    for (uint8_t m = 0; m < n_obs; m++) {
+        const float * restrict a_row = agent->a_counts[m];
+        float * restrict A_row = agent->A[m];
+        for (uint8_t k = 0; k < n_states; k++) {
+            A_row[k] = (a_row[k] + ACTINF_DIRICHLET_EPSILON) * inv_col_a[k];
+        }
+    }
+
+    /* Matrix B expectation mapping for prev_action */
+    float col_sums_b[ACTINF_MAX_STATES] = {0.0f};
+    for (uint8_t s_prime = 0; s_prime < n_states; s_prime++) {
+        for (uint8_t k = 0; k < n_states; k++) {
+            col_sums_b[k] += agent->b_counts[s_prime][k][prev_action];
+        }
+    }
+    const float eps_states = (float)n_states * ACTINF_DIRICHLET_EPSILON;
+    float inv_col_b[ACTINF_MAX_STATES];
+    for (uint8_t k = 0; k < n_states; k++) {
+        inv_col_b[k] = 1.0f / (col_sums_b[k] + eps_states);
+    }
+    for (uint8_t s_prime = 0; s_prime < n_states; s_prime++) {
+        float * restrict B_row = agent->B[prev_action][s_prime];
+        for (uint8_t k = 0; k < n_states; k++) {
+            B_row[k] = (agent->b_counts[s_prime][k][prev_action] + ACTINF_DIRICHLET_EPSILON) * inv_col_b[k];
+        }
+    }
+}
+
 void micro_actinf_learn(micro_actinf_t *agent, uint8_t obs, float learning_rate) {
     if (!agent || obs >= agent->num_obs) return;
-
-    /* Dirichlet count updates for A matrix */
-    for (uint8_t s = 0; s < agent->num_states; s++) {
-        agent->a_counts[obs][s] += learning_rate * agent->s[s];
-    }
-
-    /* Normalize columns of A */
-    for (uint8_t s = 0; s < agent->num_states; s++) {
-        float col_sum = 0.0f;
-        for (uint8_t o = 0; o < agent->num_obs; o++) {
-            col_sum += agent->a_counts[o][s];
-        }
-        if (col_sum > ACTINF_EPSILON) {
-            float inv_col = 1.0f / col_sum;
-            for (uint8_t o = 0; o < agent->num_obs; o++) {
-                agent->A[o][s] = agent->a_counts[o][s] * inv_col;
-            }
-        }
-    }
-
-    micro_actinf_update_cache(agent);
+    float old_lr_a = agent->learning_cfg.learning_rate_a;
+    agent->learning_cfg.learning_rate_a = learning_rate;
+    micro_actinf_learn_step(agent, (uint32_t)obs, (uint32_t)agent->last_action);
+    agent->learning_cfg.learning_rate_a = old_lr_a;
 }
