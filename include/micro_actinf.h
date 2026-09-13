@@ -46,6 +46,7 @@ typedef struct {
     uint8_t num_states;   /* K: Dimension of hidden state space (<= 16) */
     uint8_t num_obs;      /* M: Dimension of observation space (<= 32) */
     uint8_t num_actions;  /* A: Number of discrete control policies (<= 8) */
+    bool a_entropy_dirty; /* Flag indicating A_entropy cache needs recomputation */
     float gamma;          /* Precision parameter (inverse temperature) */
 
     /* Belief State Vector s_t: Probability distribution on probability simplex Delta^{K-1} */
@@ -121,6 +122,12 @@ float micro_actinf_shannon_entropy(const micro_actinf_t *agent);
  * @brief Recompute cached column entropies for matrix A.
  */
 void micro_actinf_update_cache(micro_actinf_t *agent);
+
+/**
+ * @brief Synchronize Dirichlet pseudo-counts from likelihood matrix A and transition tensor B.
+ * Preserves custom domain priors before executing online Dirichlet adaptation.
+ */
+void micro_actinf_sync_counts_from_matrices(micro_actinf_t *agent);
 
 /**
  * @brief Learn observation likelihood and transition parameters via Dirichlet conjugate updates.

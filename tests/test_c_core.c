@@ -223,6 +223,141 @@ void test_full_decision_cycle_latency(void) {
     fflush(stdout);
 }
 
+void test_hyperparameter_bounds_and_nan(void) {
+    printf("[TEST 7] Testing Hyperparameter Bounds & Defensive NaN Handling...\n");
+    micro_actinf_t agent;
+    micro_actinf_init(&agent, 4, 4, 2);
+
+    /* Test NaN and negative values */
+    micro_actinf_learning_config_t invalid_cfg = {
+        .learning_rate_a = -1.0f,
+        .learning_rate_b = (float)NAN,
+        .decay_factor = -0.5f,
+        .enable_learning = true
+    };
+    micro_actinf_set_learning_config(&agent, &invalid_cfg);
+
+    assert(agent.learning_cfg.learning_rate_a >= 0.0f && agent.learning_cfg.learning_rate_a <= 1.0f);
+    assert(!isnan(agent.learning_cfg.learning_rate_b));
+    assert(agent.learning_cfg.decay_factor > 0.0f && agent.learning_cfg.decay_factor <= 1.0f);
+
+    /* Test out-of-range > 1.0f values */
+    invalid_cfg.learning_rate_a = 5.0f;
+    invalid_cfg.decay_factor = 2.0f;
+    micro_actinf_set_learning_config(&agent, &invalid_cfg);
+    assert(agent.learning_cfg.learning_rate_a == 1.0f);
+    assert(agent.learning_cfg.decay_factor == 1.0f);
+
+    /* Verify step and learn_step execute safely under clamped config */
+    micro_actinf_step(&agent, 0);
+    micro_actinf_learn_step(&agent, 0, 0);
+    assert(!isnan(agent.s[0]) && !isnan(agent.a_counts[0][0]));
+
+    printf("  --> PASS: Hyperparameters sanitized and guarded against NaNs and invalid domains\n");
+}
+
+void test_extreme_likelihood_zero_fallback(void) {
+    printf("[TEST 8] Testing Extreme Likelihood Zero Fallback (Log-Space Softmax)...\n");
+    micro_actinf_t agent;
+    micro_actinf_init(&agent, 4, 4, 2);
+
+    /* Force all likelihoods for observation 1 to zero (impossible observation) */
+    for (uint8_t s = 0; s < agent.num_states; s++) {
+        agent.A[1][s] = 0.0f;
+    }
+
+    micro_actinf_step(&agent, 1);
+
+    /* Verify fallback activated and belief remains valid probability simplex */
+    float sum_s = 0.0f;
+    for (uint8_t s = 0; s < agent.num_states; s++) {
+        assert(!isnan(agent.s[s]) && !isinf(agent.s[s]));
+        assert(agent.s[s] >= 0.0f);
+        sum_s += agent.s[s];
+    }
+    assert(fabsf(sum_s - 1.0f) < 1e-4f);
+    printf("  --> PASS: Zero-likelihood fallback preserves probability axioms without NaN\n");
+}
+
+void test_cache_consistency_after_learning(void) {
+    printf("[TEST 9] Testing Column Entropy Cache Consistency After Learning...\n");
+    micro_actinf_t agent;
+    micro_actinf_init(&agent, 4, 4, 2);
+
+    assert(!agent.a_entropy_dirty);
+    float initial_entropy = agent.A_entropy[0];
+
+    /* Learning alters matrix A and sets dirty flag */
+    micro_actinf_step(&agent, 2);
+    micro_actinf_learn_step(&agent, 2, 0);
+    assert(agent.a_entropy_dirty);
+
+    /* Action selection lazily recomputes A_entropy and clears dirty flag */
+    micro_actinf_select_action(&agent);
+    assert(!agent.a_entropy_dirty);
+    assert(agent.A_entropy[0] != initial_entropy);
+
+    printf("  --> PASS: Lazy cache invalidation and recomputation strictly consistent\n");
+}
+
+void test_boundary_dimensions(void) {
+    printf("[TEST 10] Testing Boundary Dimensions (K=1, M=1, A=1 and Maximum Limits)...\n");
+    micro_actinf_t min_agent;
+    micro_actinf_init(&min_agent, 1, 1, 1);
+
+    assert(min_agent.num_states == 1);
+    assert(min_agent.B[0][0][0] == 1.0f);
+    assert(min_agent.b_counts[0][0][0] == 1.0f);
+
+    micro_actinf_step(&min_agent, 0);
+    micro_actinf_learn_step(&min_agent, 0, 0);
+    uint8_t act = micro_actinf_select_action(&min_agent);
+    assert(act == 0);
+    assert(fabsf(min_agent.s[0] - 1.0f) < 1e-5f);
+
+    micro_actinf_t max_agent;
+    micro_actinf_init(&max_agent, ACTINF_MAX_STATES, ACTINF_MAX_OBS, ACTINF_MAX_ACTIONS);
+    assert(max_agent.num_states == ACTINF_MAX_STATES);
+    assert(max_agent.num_obs == ACTINF_MAX_OBS);
+    assert(max_agent.num_actions == ACTINF_MAX_ACTIONS);
+    micro_actinf_step(&max_agent, ACTINF_MAX_OBS - 1);
+    micro_actinf_learn_step(&max_agent, ACTINF_MAX_OBS - 1, ACTINF_MAX_ACTIONS - 1);
+
+    printf("  --> PASS: Minimum (1x1x1) and maximum (16x32x8) topologies operate reliably\n");
+}
+
+void test_sync_counts_from_matrices_and_adaptation(void) {
+    printf("[TEST 11] Testing Prior Matrix Synchronization & Custom Prior Retention...\n");
+    micro_actinf_t agent;
+    micro_actinf_init(&agent, 4, 4, 2);
+
+    /* Set custom likelihood priors */
+    agent.A[0][0] = 0.85f;
+    agent.A[1][0] = 0.05f;
+    agent.A[2][0] = 0.05f;
+    agent.A[3][0] = 0.05f;
+    micro_actinf_sync_counts_from_matrices(&agent);
+
+    assert(fabsf(agent.a_counts[0][0] - 0.85f * 4.0f) < 1e-4f);
+
+    /* Step 0: Ensure online learning does NOT wipe out the custom prior */
+    micro_actinf_step(&agent, 0);
+    micro_actinf_learn_step(&agent, 0, 0);
+    assert(agent.A[0][0] > 0.80f);
+
+    /* Adapt over 500 steps of observation 0 */
+    for (int step = 0; step < 500; step++) {
+        micro_actinf_step(&agent, 0);
+        micro_actinf_learn_step(&agent, 0, 0);
+    }
+
+    /* Verify observation 0 reinforced towards certainty */
+    assert(agent.A[0][0] > 0.85f);
+    assert(!isnan(agent.A[0][0]) && !isinf(agent.A[0][0]));
+
+    printf("  --> PASS: Prior synchronization preserves custom priors and reinforces evidence stably\n");
+}
+
 int main(void) {
     printf("====================================================\n");
     printf("Running Micro-ActInf C Core Test Suite & Benchmarks\n");
@@ -234,9 +369,14 @@ int main(void) {
     test_dirichlet_online_learning();
     test_combined_inference_learning_latency();
     test_full_decision_cycle_latency();
+    test_hyperparameter_bounds_and_nan();
+    test_extreme_likelihood_zero_fallback();
+    test_cache_consistency_after_learning();
+    test_boundary_dimensions();
+    test_sync_counts_from_matrices_and_adaptation();
 
     printf("====================================================\n");
-    printf("ALL C UNIT TESTS & BENCHMARKS PASSED SUCCESSFULLY! (100%%)\n");
+    printf("ALL 11 C UNIT TESTS & BENCHMARKS PASSED SUCCESSFULLY! (100%%)\n");
     printf("====================================================\n");
     return 0;
 }

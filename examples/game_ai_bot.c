@@ -82,7 +82,7 @@ int main(void) {
     bot.A[OBS_ENEMY_NEAR][STATE_ENGAGE]  = 0.85f;
     bot.A[OBS_LOW_HEALTH][STATE_EVADE]   = 0.90f;
     bot.A[OBS_LOOT_FOUND][STATE_HEAL]    = 0.80f;
-    micro_actinf_update_cache(&bot);
+    micro_actinf_sync_counts_from_matrices(&bot);
 
     /* Prior preferences C: Desires clear path and loot, dislikes low health */
     bot.C[OBS_CLEAR]      = 0.5f;
@@ -150,12 +150,20 @@ int main(void) {
     }
     assert(valid_convergence);
 
+    uint8_t dominant_state = 0;
+    float max_s = bot.s[0];
+    for (uint8_t s = 1; s < bot.num_states; s++) {
+        if (bot.s[s] > max_s) { max_s = bot.s[s]; dominant_state = s; }
+    }
+
     printf("\nBenchmark Results:\n");
     printf("  • Total Decision+Learn Cycles: %d\n", TOTAL_CYCLES);
     printf("  • Total Elapsed Time:          %.2f ms\n", total_time_ms);
     printf("  • Full Cycle Latency:          %.3f microseconds (Budget: < 15.0 us) [%s]\n",
            per_step_us, (per_step_us < 15.0) ? "PASS" : "WARN");
     printf("  • Decision + Learning Rate:    %.0f decisions/second\n", 1e6 / per_step_us);
+    printf("  • Final Dominant State:        %s\n", STATE_NAMES[dominant_state]);
+    printf("  • Final Prescribed Action:     %s\n", ACTION_NAMES[prev_action]);
     printf("  • Final Shannon Entropy:       %.4f nats\n", micro_actinf_shannon_entropy(&bot));
     printf("  • Memory Footprint:            %zu bytes (Zero dynamic heap allocations)\n", sizeof(bot));
     printf("  • Parameter Stability:         100%% CONVERGED (0%% overflow, strictly bounded)\n");

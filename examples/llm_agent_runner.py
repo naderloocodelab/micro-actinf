@@ -88,6 +88,10 @@ class MicroActiveInferenceFilter:
         # Action preferences C (M)
         self.C_pref = [0.1, 0.3, -0.8, 0.4, 0.5, 0.2, 0.6, -0.2]
 
+        # Synchronize Dirichlet pseudo-counts to preserve domain priors during learning
+        self.a_counts = [[self.A_mat[m][s] * float(self.M) for s in range(self.K)] for m in range(self.M)]
+        self.b_counts = [[[self.B_mat[u][i][j] * float(self.K) for j in range(self.K)] for i in range(self.K)] for u in range(self.A)]
+
         self.last_action = 0
         self.step_count = 0
 

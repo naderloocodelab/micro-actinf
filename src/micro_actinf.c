@@ -49,11 +49,31 @@ void micro_actinf_update_cache(micro_actinf_t *agent) {
         }
         agent->A_entropy[s] = h_col;
     }
+    agent->a_entropy_dirty = false;
 }
 
 void micro_actinf_set_learning_config(micro_actinf_t *agent, const micro_actinf_learning_config_t *cfg) {
     if (!agent || !cfg) return;
     agent->learning_cfg = *cfg;
+
+    /* Bounds check and defensive sanitization against NaN / invalid ranges */
+    if (isnan(agent->learning_cfg.learning_rate_a) || agent->learning_cfg.learning_rate_a < 0.0f) {
+        agent->learning_cfg.learning_rate_a = 0.05f;
+    } else if (agent->learning_cfg.learning_rate_a > 1.0f) {
+        agent->learning_cfg.learning_rate_a = 1.0f;
+    }
+
+    if (isnan(agent->learning_cfg.learning_rate_b) || agent->learning_cfg.learning_rate_b < 0.0f) {
+        agent->learning_cfg.learning_rate_b = 0.05f;
+    } else if (agent->learning_cfg.learning_rate_b > 1.0f) {
+        agent->learning_cfg.learning_rate_b = 1.0f;
+    }
+
+    if (isnan(agent->learning_cfg.decay_factor) || agent->learning_cfg.decay_factor <= 0.0f) {
+        agent->learning_cfg.decay_factor = 0.998f;
+    } else if (agent->learning_cfg.decay_factor > 1.0f) {
+        agent->learning_cfg.decay_factor = 1.0f;
+    }
 }
 
 void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8_t actions) {
@@ -65,6 +85,7 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
     agent->gamma = 2.0f;
     agent->last_action = 0;
     agent->step_count = 0;
+    agent->a_entropy_dirty = false;
 
     /* Initialize default online Dirichlet learning configuration */
     agent->learning_cfg.learning_rate_a = 0.05f;
@@ -90,16 +111,19 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
 
     micro_actinf_update_cache(agent);
 
-    /* Initialize transition matrices B with weak self-persistence & b_counts */
+    /* Initialize transition matrices B with weak self-persistence & matching Dirichlet priors */
     for (uint8_t u = 0; u < agent->num_actions; u++) {
         for (uint8_t j = 0; j < agent->num_states; j++) {
             for (uint8_t i = 0; i < agent->num_states; i++) {
-                if (i == j) {
+                if (agent->num_states == 1) {
+                    agent->B[u][i][j] = 1.0f;
+                } else if (i == j) {
                     agent->B[u][i][j] = 0.50f;
                 } else {
                     agent->B[u][i][j] = 0.50f / (float)(agent->num_states - 1);
                 }
-                agent->b_counts[i][j][u] = 1.0f;
+                /* Ensure Dirichlet pseudo-counts expectation is consistent with B */
+                agent->b_counts[i][j][u] = agent->B[u][i][j] * (float)agent->num_states;
             }
         }
     }
@@ -135,15 +159,17 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
      */
     float sum = 0.0f;
     float unnorm[ACTINF_MAX_STATES];
+    float s_prior[ACTINF_MAX_STATES];
     const float * restrict a_row = agent->A[obs];
 
     for (uint8_t i = 0; i < n_states; i++) {
-        float s_prior = 0.0f;
+        float prior_val = 0.0f;
         const float * restrict b_row = agent->B[last_act][i];
         for (uint8_t j = 0; j < n_states; j++) {
-            s_prior += b_row[j] * s_prev[j];
+            prior_val += b_row[j] * s_prev[j];
         }
-        float p = a_row[i] * s_prior;
+        s_prior[i] = prior_val;
+        float p = a_row[i] * prior_val;
         unnorm[i] = p;
         sum += p;
     }
@@ -158,7 +184,7 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
         float log_posterior[ACTINF_MAX_STATES];
         for (uint8_t i = 0; i < n_states; i++) {
             float likelihood = (a_row[i] > ACTINF_EPSILON) ? a_row[i] : ACTINF_EPSILON;
-            float prior = (unnorm[i] > ACTINF_EPSILON) ? unnorm[i] : ACTINF_EPSILON;
+            float prior = (s_prior[i] > ACTINF_EPSILON) ? s_prior[i] : ACTINF_EPSILON;
             log_posterior[i] = logf(likelihood) + logf(prior);
         }
         softmax_inplace(log_posterior, n_states);
@@ -172,6 +198,11 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
 
 uint8_t micro_actinf_select_action(micro_actinf_t *agent) {
     if (!agent) return 0;
+
+    /* Lazy cache update: only recompute A_entropy when likelihood matrix A was altered */
+    if (agent->a_entropy_dirty) {
+        micro_actinf_update_cache(agent);
+    }
 
     /* Compute Expected Free Energy G(u) for each policy u */
     for (uint8_t u = 0; u < agent->num_actions; u++) {
@@ -327,12 +358,41 @@ void micro_actinf_learn_step(micro_actinf_t *agent, uint32_t observation, uint32
             B_row[k] = (agent->b_counts[s_prime][k][prev_action] + ACTINF_DIRICHLET_EPSILON) * inv_col_b[k];
         }
     }
+
+    /* Likelihood matrix changed; mark column entropy cache dirty */
+    agent->a_entropy_dirty = true;
+}
+
+void micro_actinf_sync_counts_from_matrices(micro_actinf_t *agent) {
+    if (!agent) return;
+    const uint8_t n_states = agent->num_states;
+    const uint8_t n_obs = agent->num_obs;
+    const uint8_t n_actions = agent->num_actions;
+
+    for (uint8_t s = 0; s < n_states; s++) {
+        for (uint8_t o = 0; o < n_obs; o++) {
+            agent->a_counts[o][s] = agent->A[o][s] * (float)n_obs;
+        }
+    }
+
+    for (uint8_t u = 0; u < n_actions; u++) {
+        for (uint8_t j = 0; j < n_states; j++) {
+            for (uint8_t i = 0; i < n_states; i++) {
+                agent->b_counts[i][j][u] = agent->B[u][i][j] * (float)n_states;
+            }
+        }
+    }
+
+    micro_actinf_update_cache(agent);
 }
 
 void micro_actinf_learn(micro_actinf_t *agent, uint8_t obs, float learning_rate) {
     if (!agent || obs >= agent->num_obs) return;
     float old_lr_a = agent->learning_cfg.learning_rate_a;
+    bool old_enable = agent->learning_cfg.enable_learning;
     agent->learning_cfg.learning_rate_a = learning_rate;
+    agent->learning_cfg.enable_learning = true;
     micro_actinf_learn_step(agent, (uint32_t)obs, (uint32_t)agent->last_action);
     agent->learning_cfg.learning_rate_a = old_lr_a;
+    agent->learning_cfg.enable_learning = old_enable;
 }

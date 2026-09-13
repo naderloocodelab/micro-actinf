@@ -68,8 +68,8 @@ int main(void) {
     /* Phase 1 priors: obs 0 strongly maps to state 0 */
     normal_agent.A[0][0] = 0.90f; normal_agent.A[1][1] = 0.90f;
     pro_agent.A[0][0]    = 0.90f; pro_agent.A[1][1]    = 0.90f;
-    micro_actinf_update_cache(&normal_agent);
-    micro_actinf_update_cache(&pro_agent);
+    micro_actinf_sync_counts_from_matrices(&normal_agent);
+    micro_actinf_sync_counts_from_matrices(&pro_agent);
 
     uint8_t act_normal = 0;
     uint8_t act_pro    = 0;
@@ -111,18 +111,30 @@ int main(void) {
     float avg_ent_normal = sum_entropy_normal_post_shift / (float)(TOTAL_STEPS - SHIFT_STEP);
     float avg_ent_pro    = sum_entropy_pro_post_shift / (float)(TOTAL_STEPS - SHIFT_STEP);
 
+    /* Identify active adapted state */
+    uint8_t pro_active_s = 0;
+    float max_s = pro_agent.s[0];
+    for (uint8_t s = 1; s < pro_agent.num_states; s++) {
+        if (pro_agent.s[s] > max_s) {
+            max_s = pro_agent.s[s];
+            pro_active_s = s;
+        }
+    }
+
     printf("┌──────────────────────────────────┬──────────────────────┬──────────────────────┐\n");
     printf("│ Metric                           │ Normal (عادی / Static)│ Professional (حرفه‌ای) │\n");
     printf("├──────────────────────────────────┼──────────────────────┼──────────────────────┤\n");
     printf("│ Online Learning Engine           │ OFF (Static Priors)  │ ON (O(1) Dirichlet)  │\n");
-    printf("│ Real-Time Parameter Adaptation   │ Disabled             │ Enabled (eta=0.08)   │\n");
+    printf("│ Real-Time Parameter Adaptation   │ Disabled             │ Enabled (eta=0.15)   │\n");
     printf("│ Memory Footprint                 │ 20.4 KB (Zero Heap)  │ 20.4 KB (Zero Heap)  │\n");
     printf("│ Latency per Step                 │ %6.3f us             │ %6.3f us             │\n", lat_normal, lat_pro);
     printf("│ Post-Shift Shannon Entropy       │ %6.4f nats           │ %6.4f nats           │\n", avg_ent_normal, avg_ent_pro);
     printf("│ Uncertainty Reduction            │ Baseline             │ %5.1f%% lower entropy │\n",
            ((avg_ent_normal - avg_ent_pro) / (avg_ent_normal + 1e-6f)) * 100.0f);
-    printf("│ Final A Matrix Count A[3][state] │ %6.2f (Unchanged)    │ %6.2f (Adapted)      │\n",
-           normal_agent.a_counts[3][0], pro_agent.a_counts[3][0]);
+    printf("│ Final A[3][active] Likelihood    │ %6.2f (Static)       │ %6.2f (Learned)      │\n",
+           normal_agent.A[3][pro_active_s], pro_agent.A[3][pro_active_s]);
+    printf("│ Final A[3][active] Pseudo-Count  │ %6.2f (Laplace)      │ %6.2f (Adapted)      │\n",
+           normal_agent.a_counts[3][pro_active_s], pro_agent.a_counts[3][pro_active_s]);
     printf("└──────────────────────────────────┴──────────────────────┴──────────────────────┘\n\n");
 
     printf("💡 CONCLUSION:\n");
