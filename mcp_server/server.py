@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Model Context Protocol (MCP) Server for Micro-ActInf
@@ -39,6 +39,7 @@ class ActiveInferenceState:
         self.beliefs = [1.0 / self.K] * self.K
         self.last_action = 0
         self.step_count = 0
+        self.alpha = 0.25  # Forgetting/recency mixing factor (prevents Bayesian lock-in)
 
         self.obs_map = {
             "general_chat": 0,
@@ -51,29 +52,73 @@ class ActiveInferenceState:
             "unknown": 7
         }
 
-    def _softmax(self, vec):
-        max_v = max(vec)
-        exps = [math.exp(v - max_v) for v in vec]
-        sum_exps = sum(exps)
-        return [e / sum_exps for e in exps]
+        # Raw likelihood table A_raw[obs][state]
+        A_raw = [
+            [0.65, 0.05, 0.08, 0.04, 0.04, 0.05],  # 0: general_chat
+            [0.05, 0.75, 0.10, 0.04, 0.04, 0.05],  # 1: code_request
+            [0.02, 0.02, 0.04, 0.85, 0.05, 0.02],  # 2: error_log
+            [0.25, 0.10, 0.50, 0.05, 0.05, 0.05],  # 3: math_query
+            [0.02, 0.03, 0.05, 0.05, 0.80, 0.03],  # 4: test_output
+            [0.05, 0.05, 0.25, 0.05, 0.05, 0.60],  # 5: architecture_choice
+            [0.04, 0.04, 0.04, 0.04, 0.08, 0.75],  # 6: confirmation
+            [0.10, 0.10, 0.10, 0.10, 0.10, 0.10]   # 7: unknown
+        ]
+
+        # Column-normalize A matrix (P(o | s))
+        self.A_mat = [[0.0] * self.K for _ in range(self.M)]
+        for s in range(self.K):
+            col_sum = sum(A_raw[o][s] for o in range(self.M))
+            for o in range(self.M):
+                self.A_mat[o][s] = A_raw[o][s] / col_sum
+
+        # Transition matrix B[action][to_state][from_state]
+        self.B = [[[0.0] * self.K for _ in range(self.K)] for _ in range(self.A)]
+
+        # u=0: EPISTEMIC_EXPLORE promotes exploration (0)
+        for j in range(self.K):
+            self.B[0][0][j] = 0.60
+            for i in range(1, self.K):
+                self.B[0][i][j] = 0.40 / (self.K - 1)
+
+        # u=1: PRAGMATIC_EXECUTE promotes code generation (1) & refactoring (2)
+        for j in range(self.K):
+            self.B[1][1][j] = 0.70
+            for i in range(self.K):
+                if i != 1:
+                    self.B[1][i][j] = 0.30 / (self.K - 1)
+
+        # u=2: AUDIT_DIAGNOSE promotes debugging (3)
+        for j in range(self.K):
+            self.B[2][3][j] = 0.75
+            for i in range(self.K):
+                if i != 3:
+                    self.B[2][i][j] = 0.25 / (self.K - 1)
+
+        # u=3: CONVERGE_CONCLUDE promotes verification (4) & decision (5)
+        for j in range(self.K):
+            self.B[3][4][j] = 0.45
+            self.B[3][5][j] = 0.45
+            for i in range(self.K):
+                if i not in (4, 5):
+                    self.B[3][i][j] = 0.10 / (self.K - 2)
 
     def observe(self, obs_type: str) -> dict:
         obs_id = self.obs_map.get(obs_type.lower(), 7)
-        logits = [math.log(max(b, 1e-12)) for b in self.beliefs]
-        if obs_id == 1:
-            logits[1] += 1.5  # Code gen
-        elif obs_id == 2:
-            logits[3] += 2.0  # Debugging
-        elif obs_id == 3:
-            logits[2] += 1.5  # Refactoring
-        elif obs_id == 4:
-            logits[4] += 1.8  # Verification
-        elif obs_id == 5:
-            logits[5] += 1.5  # Decision
-        else:
-            logits[0] += 1.0  # Exploration
 
-        self.beliefs = self._softmax(logits)
+        # 1. Prior prediction via Markov transition tensor B(u_{t-1}) and decay factor
+        s_prior = [0.0] * self.K
+        for i in range(self.K):
+            val = sum(self.B[self.last_action][i][j] * self.beliefs[j] for j in range(self.K))
+            s_prior[i] = (1.0 - self.alpha) * val + self.alpha * (1.0 / self.K)
+
+        # 2. Bayesian likelihood update: s_{t} = (A_{o_t, :} * s_prior) / norm
+        unnorm = [self.A_mat[obs_id][i] * s_prior[i] for i in range(self.K)]
+        total = sum(unnorm)
+        if total > 1e-12:
+            self.beliefs = [p / total for p in unnorm]
+        else:
+            self.beliefs = [1.0 / self.K] * self.K
+
         self.step_count += 1
         return self.get_state()
 
@@ -93,13 +138,13 @@ class ActiveInferenceState:
         state = self.get_state()
         dom = state["regime_index"]
         if dom == 0:
-            action_idx = 0  # Explore
+            action_idx = 0  # EPISTEMIC_EXPLORE
         elif dom in (1, 2):
-            action_idx = 1  # Pragmatic execute
+            action_idx = 1  # PRAGMATIC_EXECUTE
         elif dom == 3:
-            action_idx = 2  # Audit
+            action_idx = 2  # AUDIT_DIAGNOSE
         else:
-            action_idx = 3  # Conclude
+            action_idx = 3  # CONVERGE_CONCLUDE
 
         self.last_action = action_idx
         return {
