@@ -95,8 +95,12 @@ gcc -std=c11 -O3 -Iinclude src/micro_actinf.c examples/comparative_test.c -o com
 ./comparative_test
 ```
 
-### 2. Model Context Protocol (MCP) Server Setup
-Add Micro-ActInf as a state-tracking tool to your Claude Desktop, Antigravity, or Cursor MCP configuration:
+### 2. 🛸 Google Antigravity & AI Agents Integration Guide
+
+Connect Micro-ActInf as an Active Inference cognitive state tracker to **Google Antigravity**, **Claude Desktop**, or **Cursor** via the Model Context Protocol (MCP).
+
+#### Step 1: Add to MCP Configuration
+In your Antigravity global config (`~/.gemini/config/mcp_config.json`) or Claude Desktop config (`claude_desktop_config.json`):
 
 ```json
 {
@@ -108,6 +112,32 @@ Add Micro-ActInf as a state-tracking tool to your Claude Desktop, Antigravity, o
   }
 }
 ```
+
+#### Step 2: Establish the Cognitive Governance Rule (`GEMINI.md`)
+Create a `GEMINI.md` file in your workspace or global directory (`~/.gemini/config/GEMINI.md`) so Antigravity automatically queries the state filter on every engineering task:
+
+```markdown
+# ACTIVE INFERENCE COGNITIVE REGIME & POLICY GOVERNANCE
+
+You are governed by an external, zero-allocation Active Inference State Filter (`micro-actinf`).
+
+## Operating Directives:
+1. **Regime Tracking**: For any engineering, coding, or debugging query, invoke `actinf_observe(obs_type=...)` and `actinf_prescribe_policy()`.
+2. **Policy Adherence**:
+   - `PRAGMATIC_EXECUTE` (CODE_GEN): 100% production code immediately. Zero greetings, zero polite fluff.
+   - `AUDIT_DIAGNOSE` (DEBUGGING): Root-cause diagnosis and exact diff patch without lecturing.
+   - `EPISTEMIC_EXPLORE` (EXPLORATION): Ask precise technical questions to resolve ambiguities.
+   - `CONVERGE_CONCLUDE` (VERIFICATION): Run tests and report numerical metrics.
+3. **Free Energy Minimization**: Prevent LLM context drift and token waste.
+```
+
+#### How the Automated Lifecycle Works:
+1. **User Prompt Arrives**: The user submits an engineering query.
+2. **Rule Enforcement**: The `GEMINI.md` rule halts unconstrained prose generation.
+3. **MCP Tool Call**: The agent queries `micro-actinf` via stdio JSON-RPC (`actinf_observe` + `actinf_prescribe_policy`).
+4. **Variational State Update (< 2 µs)**: The engine updates Dirichlet counts, minimizes Expected Free Energy $G(u)$, and prescribes the optimal action regime.
+5. **Deterministic Delivery**: The agent outputs sharp, production-ready code with 0% token waste.
+
 
 ### 3. Universal Multi-Provider Comparative Runner
 The runner in `examples/llm_agent_runner.py` works seamlessly across all major AI backends. Simply pass your provider and model:
@@ -168,8 +198,27 @@ You can also export environment variables (`LLM_PROVIDER`, `LLM_API_KEY`, `LLM_M
 3. **اتصال سرور پروتکل کانتکست (MCP Server):**
    با متصل کردن `mcp_server/server.py` به ابزارهایی مانند Claude Desktop یا Antigravity، مدل در حین مکالمات طولانی دچار انحراف کانتکست، تکرار بیهوده یا توهم نمی‌شود و همواره سیاست بهینه بعدی (Explore, Execute, Refactor, Verify) به آن دیکته می‌گردد.
 
+### 🛸 راهنمای اختصاصی فعال‌سازی در Google Antigravity:
+
+برای فعال‌سازی کامل حاکمیت شناختی در تمامی پروژه‌ها و ورک‌اسپیس‌های آنتی‌گرویتی:
+
+1. **پیکربندی سرور در `~/.gemini/config/mcp_config.json`:**
+   ```json
+   {
+     "mcpServers": {
+       "micro-actinf": {
+         "command": "python",
+         "args": ["مسیر_پروژه/micro-actinf/mcp_server/server.py"]
+       }
+     }
+   }
+   ```
+
+2. **ایجاد قانون ناظر دائمی (`GEMINI.md`):**
+   یک فایل با نام `GEMINI.md` در ریشه پروژه یا مسیر گلوبال `~/.gemini/config/GEMINI.md` قرار دهید تا مدل هوش مصنوعی در هر پرامپت قبل از تایپ پاسخ، ابتدا ابزار `actinf_observe` را احضار کرده و پاسخ خود را دقیقاً با کمینه‌سازی انرژی آزاد (بدون تعارفات و اتلاف توکن) تنظیم کند.
+
 4. **استفاده مستقیم از هسته C11 در بازی‌سازی و رباتیک:**
-   کد C این مخزن با اشغال تنها **۲۰.۷۵ کیلوبایت رم** و سرعت اجرای **۱.۶۷ میکروثانیه** (۵۹۶ هزار تصمیم در ثانیه) بدون حتی یک بار فراخوانی `malloc`، مستقیماً قابل کامپایل و الحاق در موتورهای بازی نظیر Unreal Engine و Unity است.
+   کد C این مخزن با اشغال تنها **۲۰.۴ کیلوبایت رم** و سرعت اجرای **۱.۶۲ میکروثانیه** (بیش از ۶۰۰ هزار تصمیم در ثانیه) بدون حتی یک بار فراخوانی `malloc`، مستقیماً قابل کامپایل و الحاق در موتورهای بازی نظیر Unreal Engine و Unity است.
 
 ---
 
