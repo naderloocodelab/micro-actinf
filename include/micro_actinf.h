@@ -192,6 +192,16 @@ MICRO_ACTINF_API void micro_actinf_set_cost_config(micro_actinf_t *agent, const 
 MICRO_ACTINF_API void micro_actinf_set_horizon(micro_actinf_t *agent, uint8_t horizon);
 
 /**
+ * @brief Set adaptive prior decay factor alpha (bounded in [0.0, 1.0]).
+ */
+MICRO_ACTINF_API void micro_actinf_set_alpha_prior(micro_actinf_t *agent, float alpha);
+
+/**
+ * @brief Set epistemic exploration weighting parameter beta.
+ */
+MICRO_ACTINF_API void micro_actinf_set_beta_epistemic(micro_actinf_t *agent, float beta);
+
+/**
  * @brief Update belief distribution using variational message passing given an observation.
  * Formulation: s_{prior} = (1 - alpha)*B(u)*s_{prev} + alpha*(1/K)
  *              s_{t+1}   = (A_{o_t, :} \odot s_{prior}) / sum(...)

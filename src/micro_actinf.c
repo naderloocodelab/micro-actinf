@@ -106,6 +106,19 @@ void micro_actinf_set_horizon(micro_actinf_t *agent, uint8_t horizon) {
     agent->horizon = horizon;
 }
 
+void micro_actinf_set_alpha_prior(micro_actinf_t *agent, float alpha) {
+    if (!agent) return;
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    agent->alpha_prior = alpha;
+}
+
+void micro_actinf_set_beta_epistemic(micro_actinf_t *agent, float beta) {
+    if (!agent) return;
+    if (beta < 0.0f) beta = 0.0f;
+    agent->cost_cfg.beta_epistemic = beta;
+}
+
 void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8_t actions) {
     if (!agent) return;
 

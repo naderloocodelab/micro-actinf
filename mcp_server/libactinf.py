@@ -207,6 +207,12 @@ if _C_LIB is not None:
     _C_LIB.micro_actinf_set_horizon.argtypes = [ctypes.POINTER(MicroActInfStruct), ctypes.c_uint8]
     _C_LIB.micro_actinf_set_horizon.restype = None
 
+    _C_LIB.micro_actinf_set_alpha_prior.argtypes = [ctypes.POINTER(MicroActInfStruct), ctypes.c_float]
+    _C_LIB.micro_actinf_set_alpha_prior.restype = None
+
+    _C_LIB.micro_actinf_set_beta_epistemic.argtypes = [ctypes.POINTER(MicroActInfStruct), ctypes.c_float]
+    _C_LIB.micro_actinf_set_beta_epistemic.restype = None
+
 
 class MicroActInfEngine:
     """
@@ -491,3 +497,18 @@ class MicroActInfEngine:
         else:
             self.s = [1.0 / self.K] * self.K
         return {"status": "reset_successful", "state": self.get_state()}
+
+    def set_horizon(self, horizon: int) -> None:
+        """Set planning trajectory horizon H (bounded 1 to 4)."""
+        if self.c_lib is not None:
+            self.c_lib.micro_actinf_set_horizon(ctypes.byref(self.agent), ctypes.c_uint8(horizon))
+
+    def set_alpha_prior(self, alpha: float) -> None:
+        """Set adaptive prior decay factor alpha (bounded 0.0 to 1.0)."""
+        if self.c_lib is not None:
+            self.c_lib.micro_actinf_set_alpha_prior(ctypes.byref(self.agent), ctypes.c_float(alpha))
+
+    def set_beta_epistemic(self, beta: float) -> None:
+        """Set epistemic exploration weighting parameter beta."""
+        if self.c_lib is not None:
+            self.c_lib.micro_actinf_set_beta_epistemic(ctypes.byref(self.agent), ctypes.c_float(beta))
