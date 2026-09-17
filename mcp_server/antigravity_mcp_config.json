@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "micro-actinf": {
+      "command": "python",
+      "args": [
+        "C:/Users/hassan/Desktop/نورون/micro-actinf/mcp_server/server.py"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

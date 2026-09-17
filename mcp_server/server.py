@@ -1,196 +1,264 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Model Context Protocol (MCP) Server for Micro-ActInf
-----------------------------------------------------
-Provides Active Inference State Tracking & Policy Prescription as an MCP service
-for AI Agents (Antigravity, Claude Desktop, Cursor, Ollama).
+Model Context Protocol (MCP) Cognitive Governor Server for Micro-ActInf
+-----------------------------------------------------------------------
+Provides Active Inference Cognitive State Tracking, Policy Prescription,
+Action Safety Evaluation (ALLOW/MODIFY/DENY/ASK), and Outcome Credit Learning
+for Autonomous AI Agents (Google Antigravity, Claude Desktop, Cursor).
 
-Transport: Standard I/O (JSON-RPC 2.0 stdio via FastMCP)
+Architecture: Single Source of Truth — Powered directly by C11 Static Memory Engine.
+Transport: Standard I/O (JSON-RPC 2.0 stdio via FastMCP & robust zero-dependency fallback)
 """
 
-import math
-import json
+import os
 import sys
+import json
+from typing import Optional, Dict, Any
 
-# Cognitive Regimes for Autonomous Coding Agents
-REGIMES = [
-    "EXPLORATION (Problem analysis & requirement gathering)",
-    "CODE_GENERATION (Writing concrete implementations)",
-    "REFACTORING (Architectural optimization & code cleanup)",
-    "DEBUGGING (Root-cause analysis & error correction)",
-    "VERIFICATION (Running test suites & regression testing)",
-    "DECISION (Commitment, branch merging & architecture lock)"
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
+# Import the Canonical C11 Engine Binding
+try:
+    from libactinf import MicroActInfEngine, REGIMES, POLICIES, RISK_LEVELS, VERDICTS
+except ImportError:
+    # Ensure current directory is in path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from libactinf import MicroActInfEngine, REGIMES, POLICIES, RISK_LEVELS, VERDICTS
+
+# Instantiate canonical Active Inference Governor
+governor = MicroActInfEngine()
+state_filter = governor  # Backward-compatible alias for existing scripts
+
+# Tool schemas and documentation
+TOOL_DEFINITIONS = [
+    {
+        "name": "actinf_observe",
+        "description": "Feed an incoming user prompt, system event, or tool result into the Active Inference POMDP filter.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "obs_type": {
+                    "type": "string",
+                    "enum": [
+                        "general_chat",
+                        "code_request",
+                        "error_log",
+                        "math_query",
+                        "test_output",
+                        "architecture_choice",
+                        "confirmation",
+                        "unknown"
+                    ],
+                    "description": "Categorized sensory observation type."
+                },
+                "context_attributes": {
+                    "type": "string",
+                    "description": "Optional JSON string with additional metadata (e.g. failure_signal, risk, context_pressure)."
+                }
+            },
+            "required": ["obs_type"]
+        }
+    },
+    {
+        "name": "actinf_get_state",
+        "description": "Get current cognitive regime, belief distribution, uncertainty, loop status, and progress metrics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "actinf_prescribe_policy",
+        "description": "Get mathematically optimal next engineering policy action minimizing multi-step Expected Free Energy.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "actinf_evaluate_action",
+        "description": "Hard Governor Gate: Evaluates a proposed tool/action before execution against cognitive regime and safety risk model.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "proposed_tool": {
+                    "type": "string",
+                    "description": "Name of the tool the agent intends to call (e.g. write_to_file, run_command, replace_file_content)."
+                },
+                "action_type": {
+                    "type": "string",
+                    "enum": ["EPISTEMIC_EXPLORE", "PRAGMATIC_EXECUTE", "AUDIT_DIAGNOSE", "CONVERGE_CONCLUDE"],
+                    "description": "Category of the action being taken."
+                },
+                "risk_level": {
+                    "type": "string",
+                    "enum": ["READ", "ANALYZE", "TEST", "EDIT", "EXECUTE", "DESTRUCTIVE"],
+                    "description": "Risk profile of the action."
+                },
+                "confidence_threshold": {
+                    "type": "number",
+                    "description": "Minimum confidence required to permit high-risk execution (default: 0.80)."
+                }
+            },
+            "required": ["proposed_tool"]
+        }
+    },
+    {
+        "name": "actinf_record_outcome",
+        "description": "Record tool execution outcome and execute credit assignment learning to improve future policy selection.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["EPISTEMIC_EXPLORE", "PRAGMATIC_EXECUTE", "AUDIT_DIAGNOSE", "CONVERGE_CONCLUDE"],
+                    "description": "Action that was executed."
+                },
+                "outcome_obs": {
+                    "type": "string",
+                    "enum": [
+                        "general_chat",
+                        "code_request",
+                        "error_log",
+                        "math_query",
+                        "test_output",
+                        "architecture_choice",
+                        "confirmation",
+                        "unknown"
+                    ],
+                    "description": "Resulting observation type observed after tool execution."
+                },
+                "success": {
+                    "type": "boolean",
+                    "description": "Whether the action resulted in positive progress or an error/failure."
+                },
+                "progress_delta": {
+                    "type": "number",
+                    "description": "Quantitative progress improvement metric (e.g. 0.1 to 1.0)."
+                }
+            },
+            "required": ["action", "outcome_obs", "success"]
+        }
+    },
+    {
+        "name": "actinf_reset",
+        "description": "Reset belief state to uniform prior while preserving learned Dirichlet transition and observation parameters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    }
 ]
 
-POLICIES = [
-    "EPISTEMIC_EXPLORE (Request clarification or gather more context)",
-    "PRAGMATIC_EXECUTE (Generate production code directly)",
-    "AUDIT_DIAGNOSE (Perform step-by-step diagnostic audit)",
-    "CONVERGE_CONCLUDE (Summarize changes and finalize task)"
-]
+
+def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatch tool execution to the canonical C11 engine."""
+    if tool_name == "actinf_observe":
+        obs_type = args.get("obs_type", "unknown")
+        ctx = None
+        if "context_attributes" in args and isinstance(args["context_attributes"], str):
+            try:
+                ctx = json.loads(args["context_attributes"])
+            except Exception:
+                ctx = None
+        return governor.observe(obs_type, ctx)
+
+    elif tool_name == "actinf_get_state":
+        return governor.get_state()
+
+    elif tool_name == "actinf_prescribe_policy":
+        return governor.prescribe_policy()
+
+    elif tool_name == "actinf_evaluate_action":
+        tool = args.get("proposed_tool", "unknown")
+        act_type = args.get("action_type", "PRAGMATIC_EXECUTE")
+        risk = args.get("risk_level", "EDIT")
+        conf_th = float(args.get("confidence_threshold", 0.80))
+        return governor.evaluate_action(tool, act_type, risk, conf_th)
+
+    elif tool_name == "actinf_record_outcome":
+        act = args.get("action", "PRAGMATIC_EXECUTE")
+        outcome_obs = args.get("outcome_obs", "unknown")
+        success = bool(args.get("success", True))
+        delta = float(args.get("progress_delta", 0.10))
+        return governor.record_outcome(act, outcome_obs, success, delta)
+
+    elif tool_name == "actinf_reset":
+        return governor.reset()
+
+    else:
+        raise ValueError(f"Unknown tool: {tool_name}")
 
 
-class ActiveInferenceState:
-    def __init__(self):
-        self.K = 6  # States
-        self.M = 8  # Observations
-        self.A = 4  # Actions
-        self.beliefs = [1.0 / self.K] * self.K
-        self.last_action = 0
-        self.step_count = 0
-        self.alpha = 0.25  # Forgetting/recency mixing factor (prevents Bayesian lock-in)
-
-        self.obs_map = {
-            "general_chat": 0,
-            "code_request": 1,
-            "error_log": 2,
-            "math_query": 3,
-            "test_output": 4,
-            "architecture_choice": 5,
-            "confirmation": 6,
-            "unknown": 7
-        }
-
-        # Raw likelihood table A_raw[obs][state]
-        A_raw = [
-            [0.65, 0.05, 0.08, 0.04, 0.04, 0.05],  # 0: general_chat
-            [0.05, 0.75, 0.10, 0.04, 0.04, 0.05],  # 1: code_request
-            [0.02, 0.02, 0.04, 0.85, 0.05, 0.02],  # 2: error_log
-            [0.25, 0.10, 0.50, 0.05, 0.05, 0.05],  # 3: math_query
-            [0.02, 0.03, 0.05, 0.05, 0.80, 0.03],  # 4: test_output
-            [0.05, 0.05, 0.25, 0.05, 0.05, 0.60],  # 5: architecture_choice
-            [0.04, 0.04, 0.04, 0.04, 0.08, 0.75],  # 6: confirmation
-            [0.10, 0.10, 0.10, 0.10, 0.10, 0.10]   # 7: unknown
-        ]
-
-        # Column-normalize A matrix (P(o | s))
-        self.A_mat = [[0.0] * self.K for _ in range(self.M)]
-        for s in range(self.K):
-            col_sum = sum(A_raw[o][s] for o in range(self.M))
-            for o in range(self.M):
-                self.A_mat[o][s] = A_raw[o][s] / col_sum
-
-        # Transition matrix B[action][to_state][from_state]
-        self.B = [[[0.0] * self.K for _ in range(self.K)] for _ in range(self.A)]
-
-        # u=0: EPISTEMIC_EXPLORE promotes exploration (0)
-        for j in range(self.K):
-            self.B[0][0][j] = 0.60
-            for i in range(1, self.K):
-                self.B[0][i][j] = 0.40 / (self.K - 1)
-
-        # u=1: PRAGMATIC_EXECUTE promotes code generation (1) & refactoring (2)
-        for j in range(self.K):
-            self.B[1][1][j] = 0.70
-            for i in range(self.K):
-                if i != 1:
-                    self.B[1][i][j] = 0.30 / (self.K - 1)
-
-        # u=2: AUDIT_DIAGNOSE promotes debugging (3)
-        for j in range(self.K):
-            self.B[2][3][j] = 0.75
-            for i in range(self.K):
-                if i != 3:
-                    self.B[2][i][j] = 0.25 / (self.K - 1)
-
-        # u=3: CONVERGE_CONCLUDE promotes verification (4) & decision (5)
-        for j in range(self.K):
-            self.B[3][4][j] = 0.45
-            self.B[3][5][j] = 0.45
-            for i in range(self.K):
-                if i not in (4, 5):
-                    self.B[3][i][j] = 0.10 / (self.K - 2)
-
-    def observe(self, obs_type: str) -> dict:
-        obs_id = self.obs_map.get(obs_type.lower(), 7)
-
-        # 1. Prior prediction via Markov transition tensor B(u_{t-1}) and decay factor
-        s_prior = [0.0] * self.K
-        for i in range(self.K):
-            val = sum(self.B[self.last_action][i][j] * self.beliefs[j] for j in range(self.K))
-            s_prior[i] = (1.0 - self.alpha) * val + self.alpha * (1.0 / self.K)
-
-        # 2. Bayesian likelihood update: s_{t} = (A_{o_t, :} * s_prior) / norm
-        unnorm = [self.A_mat[obs_id][i] * s_prior[i] for i in range(self.K)]
-        total = sum(unnorm)
-        if total > 1e-12:
-            self.beliefs = [p / total for p in unnorm]
-        else:
-            self.beliefs = [1.0 / self.K] * self.K
-
-        self.step_count += 1
-        return self.get_state()
-
-    def get_state(self) -> dict:
-        dominant_idx = max(range(self.K), key=lambda i: self.beliefs[i])
-        entropy = -sum(b * math.log(b + 1e-12) for b in self.beliefs)
-        return {
-            "dominant_regime": REGIMES[dominant_idx],
-            "regime_index": dominant_idx,
-            "confidence": round(self.beliefs[dominant_idx] * 100, 2),
-            "shannon_entropy_nats": round(entropy, 4),
-            "step_count": self.step_count,
-            "belief_distribution": {REGIMES[i].split()[0]: round(self.beliefs[i], 4) for i in range(self.K)}
-        }
-
-    def prescribe_policy(self) -> dict:
-        state = self.get_state()
-        dom = state["regime_index"]
-        if dom == 0:
-            action_idx = 0  # EPISTEMIC_EXPLORE
-        elif dom in (1, 2):
-            action_idx = 1  # PRAGMATIC_EXECUTE
-        elif dom == 3:
-            action_idx = 2  # AUDIT_DIAGNOSE
-        else:
-            action_idx = 3  # CONVERGE_CONCLUDE
-
-        self.last_action = action_idx
-        return {
-            "prescribed_action": POLICIES[action_idx],
-            "action_index": action_idx,
-            "directive": f"Directly focus on {POLICIES[action_idx].split()[0]}. Avoid drifting into unrelated discussions."
-        }
-
-
-# Instantiate shared state filter
-state_filter = ActiveInferenceState()
-
+# FastMCP Server Setup
 try:
     from mcp.server.fastmcp import FastMCP
     mcp = FastMCP("micro-actinf")
 
     @mcp.tool()
-    def actinf_observe(obs_type: str) -> str:
-        """Feed an incoming user/system observation into the Active Inference POMDP filter.
-        Parameters:
-            obs_type: One of 'general_chat', 'code_request', 'error_log', 'math_query', 'test_output', 'architecture_choice', 'confirmation', 'unknown'
-        """
-        return json.dumps(state_filter.observe(obs_type), indent=2)
+    def actinf_observe(obs_type: str, context_attributes: str = "") -> str:
+        """Feed sensory observation into the Active Inference POMDP filter."""
+        res = execute_tool("actinf_observe", {"obs_type": obs_type, "context_attributes": context_attributes})
+        return json.dumps(res, indent=2)
 
     @mcp.tool()
     def actinf_get_state() -> str:
-        """Get current cognitive regime, belief distribution, and Shannon entropy."""
-        return json.dumps(state_filter.get_state(), indent=2)
+        """Get current cognitive regime, belief distribution, uncertainty, and loop status."""
+        return json.dumps(execute_tool("actinf_get_state", {}), indent=2)
 
     @mcp.tool()
     def actinf_prescribe_policy() -> str:
-        """Get mathematically optimal next engineering policy action to prevent context drift."""
-        return json.dumps(state_filter.prescribe_policy(), indent=2)
+        """Get mathematically optimal next engineering policy action minimizing Expected Free Energy."""
+        return json.dumps(execute_tool("actinf_prescribe_policy", {}), indent=2)
+
+    @mcp.tool()
+    def actinf_evaluate_action(proposed_tool: str,
+                              action_type: str = "PRAGMATIC_EXECUTE",
+                              risk_level: str = "EDIT",
+                              confidence_threshold: float = 0.80) -> str:
+        """Hard Governor Gate: Evaluates proposed LLM action against safety risk model (ALLOW, MODIFY, ASK_CONFIRMATION, DENY)."""
+        args = {
+            "proposed_tool": proposed_tool,
+            "action_type": action_type,
+            "risk_level": risk_level,
+            "confidence_threshold": confidence_threshold
+        }
+        return json.dumps(execute_tool("actinf_evaluate_action", args), indent=2)
+
+    @mcp.tool()
+    def actinf_record_outcome(action: str,
+                             outcome_obs: str,
+                             success: bool,
+                             progress_delta: float = 0.10) -> str:
+        """Record execution outcome and execute credit assignment learning."""
+        args = {
+            "action": action,
+            "outcome_obs": outcome_obs,
+            "success": success,
+            "progress_delta": progress_delta
+        }
+        return json.dumps(execute_tool("actinf_record_outcome", args), indent=2)
+
+    @mcp.tool()
+    def actinf_reset() -> str:
+        """Reset belief state to uniform prior while preserving learned parameters."""
+        return json.dumps(execute_tool("actinf_reset", {}), indent=2)
 
     def main():
         mcp.run(transport="stdio")
 
 except ImportError:
     # Pure standard library fallback with strict JSON-RPC 2.0 compliance
-    def handle_request(req: dict) -> dict:
+    def handle_request(req: dict) -> Optional[dict]:
         req_id = req.get("id")
         method = req.get("method")
         params = req.get("params", {})
 
-        # Notifications (no id) must be handled silently with no response
-        if req_id is None or method.startswith("notifications/"):
+        if req_id is None or (method and method.startswith("notifications/")):
             return None
 
         if method == "ping":
@@ -203,7 +271,7 @@ except ImportError:
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "micro-actinf", "version": "1.0.0"}
+                    "serverInfo": {"name": "micro-actinf", "version": "2.0.0"}
                 }
             }
 
@@ -211,55 +279,27 @@ except ImportError:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "result": {
-                    "tools": [
-                        {
-                            "name": "actinf_observe",
-                            "description": "Feed an incoming user/system observation into the Active Inference POMDP filter.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "obs_type": {
-                                        "type": "string",
-                                        "enum": ["general_chat", "code_request", "error_log", "math_query", "test_output", "architecture_choice", "confirmation", "unknown"]
-                                    }
-                                },
-                                "required": ["obs_type"]
-                            }
-                        },
-                        {
-                            "name": "actinf_get_state",
-                            "description": "Get current cognitive regime, belief distribution, and Shannon entropy.",
-                            "inputSchema": {"type": "object", "properties": {}}
-                        },
-                        {
-                            "name": "actinf_prescribe_policy",
-                            "description": "Get mathematically optimal next engineering policy action to prevent context drift.",
-                            "inputSchema": {"type": "object", "properties": {}}
-                        }
-                    ]
-                }
+                "result": {"tools": TOOL_DEFINITIONS}
             }
 
         if method == "tools/call":
             tool_name = params.get("name")
             args = params.get("arguments", {})
-            if tool_name == "actinf_observe":
-                res = state_filter.observe(args.get("obs_type", "unknown"))
-            elif tool_name == "actinf_get_state":
-                res = state_filter.get_state()
-            elif tool_name == "actinf_prescribe_policy":
-                res = state_filter.prescribe_policy()
-            else:
-                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found"}}
+            try:
+                res = execute_tool(tool_name, args)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"content": [{"type": "text", "text": json.dumps(res, indent=2)}]}
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32603, "message": str(e)}
+                }
 
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"content": [{"type": "text", "text": json.dumps(res, indent=2)}]}
-            }
-
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Unknown method {method}"}}
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method {method} not found"}}
 
     def main():
         for line in sys.stdin:
@@ -272,7 +312,7 @@ except ImportError:
                 if resp is not None:
                     sys.stdout.write(json.dumps(resp) + "\n")
                     sys.stdout.flush()
-            except Exception as e:
+            except Exception:
                 pass
 
 

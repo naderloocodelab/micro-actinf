@@ -24,160 +24,83 @@ import math
 import urllib.request
 import urllib.error
 import argparse
+import ctypes
 
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
 # =====================================================================
 # 1. Micro Active Inference POMDP State Filter (20KB Architecture)
 # =====================================================================
 
-STATE_LABELS = [
-    "EXPLORATION (تحلیل مسئله / Requirement Analysis)",
-    "CODE_GEN (تولید کد / Code Generation)",
-    "REFACTOR (بهینه‌سازی محاسباتی / Algorithmic Refactor)",
-    "DEBUGGING (عیب‌یابی / Root-Cause Diagnosis)",
-    "VERIFICATION (آزمون و ارزیابی / Unit Testing)",
-    "DECISION (تصمیم‌گیری معماری / Architectural Decision)"
-]
-
-ACTION_LABELS = [
-    "EPISTEMIC_EXPLORE (شفاف‌سازی نیازمندی‌ها / Information Seeking)",
-    "PRAGMATIC_EXECUTE (پیاده‌سازی مستقیم / Direct Implementation)",
-    "AUDIT_DIAGNOSE (تحلیل عمیق باگ و پروفایلینگ / Deep Diagnostic Audit)",
-    "CONVERGE_CONCLUDE (جمع‌بندی و تست اعتبارسنجی / Convergence & Sign-Off)"
-]
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp_server"))
+try:
+    from libactinf import MicroActInfEngine, REGIMES as STATE_LABELS, POLICIES as ACTION_LABELS
+except ImportError:
+    # Local fallback labels
+    STATE_LABELS = [
+        "EXPLORATION (Problem analysis & requirement gathering)",
+        "CODE_GEN (Writing concrete implementations)",
+        "REFACTOR (Algorithmic optimization & code cleanup)",
+        "DEBUGGING (Root-cause analysis & error correction)",
+        "VERIFICATION (Running test suites & regression testing)",
+        "DECISION (Commitment, branch merging & architecture lock)"
+    ]
+    ACTION_LABELS = [
+        "EPISTEMIC_EXPLORE (Request clarification or gather more context)",
+        "PRAGMATIC_EXECUTE (Generate production code directly)",
+        "AUDIT_DIAGNOSE (Perform step-by-step diagnostic audit)",
+        "CONVERGE_CONCLUDE (Summarize changes and finalize task)"
+    ]
 
 
 class MicroActiveInferenceFilter:
+    """
+    Canonical Active Inference Filter for LLM Agents.
+    Driven directly by the C11 Zero-Allocation Core Engine.
+    """
     def __init__(self, num_states=6, num_obs=8, num_actions=4):
         self.K = num_states
         self.M = num_obs
         self.A = num_actions
+        self.engine = MicroActInfEngine(states=num_states, obs=num_obs, actions=num_actions)
 
-        # Belief state vector s_t and previous belief vector s_{t-1}
-        self.beliefs = [1.0 / self.K] * self.K
-        self.s_prev = [1.0 / self.K] * self.K
+    @property
+    def beliefs(self):
+        return [float(self.engine.agent.s[i]) for i in range(self.K)]
 
-        # Dirichlet Accumulators
-        self.a_counts = [[1.0 for _ in range(self.K)] for _ in range(self.M)]
-        self.b_counts = [[[1.0 for _ in range(self.K)] for _ in range(self.K)] for _ in range(self.A)]
+    @property
+    def last_action(self):
+        return int(self.engine.agent.last_action)
 
-        # Likelihood Matrix A (M x K): P(obs | state)
-        self.A_mat = [[0.05 for _ in range(self.K)] for _ in range(self.M)]
-        self.A_mat[0][0] = 0.70  # general inquiry -> exploration
-        self.A_mat[1][1] = 0.75  # code request -> code gen
-        self.A_mat[2][3] = 0.80  # error log -> debugging
-        self.A_mat[3][2] = 0.70  # math / optimization -> refactor
-        self.A_mat[4][4] = 0.85  # test output -> verification
-        self.A_mat[5][5] = 0.80  # decision prompt -> decision
-        self.A_mat[6][4] = 0.70  # confirmation -> verification
-        self.A_mat[7][0] = 0.50  # unknown -> exploration
-        self._normalize_columns(self.A_mat)
+    @last_action.setter
+    def last_action(self, val):
+        self.engine.agent.last_action = int(val)
 
-        # Transition Matrices B(u) (A x K x K): P(s_next | s_curr, action)
-        self.B_mat = [[[1.0 / self.K for _ in range(self.K)] for _ in range(self.K)] for _ in range(self.A)]
-        for u in range(self.A):
-            for j in range(self.K):
-                for i in range(self.K):
-                    if (u == 0 and i == 0) or (u == 1 and i == 1) or (u == 2 and i == 3) or (u == 3 and i == 5):
-                        self.B_mat[u][i][j] = 0.60
-                    else:
-                        self.B_mat[u][i][j] = 0.40 / (self.K - 1)
-
-        # Action preferences C (M)
-        self.C_pref = [0.1, 0.3, -0.8, 0.4, 0.5, 0.2, 0.6, -0.2]
-
-        # Synchronize Dirichlet pseudo-counts to preserve domain priors during learning
-        self.a_counts = [[self.A_mat[m][s] * float(self.M) for s in range(self.K)] for m in range(self.M)]
-        self.b_counts = [[[self.B_mat[u][i][j] * float(self.K) for j in range(self.K)] for i in range(self.K)] for u in range(self.A)]
-
-        self.last_action = 0
-        self.step_count = 0
-
-    def _normalize_columns(self, mat):
-        for col in range(len(mat[0])):
-            total = sum(mat[row][col] for row in range(len(mat)))
-            if total > 0:
-                for row in range(len(mat)):
-                    mat[row][col] /= total
-
-    def _softmax(self, vec):
-        max_v = max(vec)
-        exps = [math.exp(v - max_v) for v in vec]
-        sum_exps = sum(exps)
-        return [e / sum_exps for e in exps]
+    @property
+    def step_count(self):
+        return int(self.engine.agent.step_count)
 
     def update_beliefs(self, obs_id: int):
-        """s_{t+1} = Softmax( ln A[o, :] + ln( B(u_{t-1}) * s_t ) )"""
-        self.s_prev = list(self.beliefs)
-        prior_state = [0.0] * self.K
-        for i in range(self.K):
-            for j in range(self.K):
-                prior_state[i] += self.B_mat[self.last_action][i][j] * self.s_prev[j]
-
-        log_posterior = [0.0] * self.K
-        for i in range(self.K):
-            likelihood = max(self.A_mat[obs_id][i], 1e-12)
-            prior = max(prior_state[i], 1e-12)
-            log_posterior[i] = math.log(likelihood) + math.log(prior)
-
-        self.beliefs = self._softmax(log_posterior)
-        self.step_count += 1
+        obs_names = [
+            "general_chat", "code_request", "error_log", "math_query",
+            "test_output", "architecture_choice", "confirmation", "unknown"
+        ]
+        name = obs_names[obs_id] if 0 <= obs_id < len(obs_names) else "unknown"
+        self.engine.observe(name)
         return self.beliefs
 
     def learn_step(self, obs_id: int, prev_action: int, eta_a=0.05, eta_b=0.05, decay=0.998):
-        """O(1) Recursive Online Conjugate Dirichlet Learning Update"""
-        eps = 1e-6
-        # 1. Observation Pseudo-Count Update
-        for s in range(self.K):
-            self.a_counts[obs_id][s] = decay * self.a_counts[obs_id][s] + eta_a * self.beliefs[s]
-
-        # 2. Transition Pseudo-Count Update
-        for s_prime in range(self.K):
-            for s in range(self.K):
-                self.b_counts[prev_action][s_prime][s] = (
-                    decay * self.b_counts[prev_action][s_prime][s] + eta_b * self.beliefs[s_prime] * self.s_prev[s]
-                )
-
-        # 3. Categorical Expectation Mapping
-        for s in range(self.K):
-            sum_a = sum(self.a_counts[m][s] + eps for m in range(self.M))
-            for m in range(self.M):
-                self.A_mat[m][s] = (self.a_counts[m][s] + eps) / sum_a
-
-        for s in range(self.K):
-            sum_b = sum(self.b_counts[prev_action][s_prime][s] + eps for s_prime in range(self.K))
-            for s_prime in range(self.K):
-                self.B_mat[prev_action][s_prime][s] = (self.b_counts[prev_action][s_prime][s] + eps) / sum_b
+        if self.engine.c_lib is not None:
+            self.engine.c_lib.micro_actinf_learn_step(ctypes.byref(self.engine.agent), obs_id, prev_action)
 
     def compute_expected_free_energy(self):
-        """Computes Expected Free Energy G(u) for each policy action u"""
-        G = [0.0] * self.A
-        for u in range(self.A):
-            s_pred = [0.0] * self.K
-            for i in range(self.K):
-                for j in range(self.K):
-                    s_pred[i] += self.B_mat[u][i][j] * self.beliefs[j]
-
-            o_pred = [0.0] * self.M
-            for o in range(self.M):
-                for i in range(self.K):
-                    o_pred[o] += self.A_mat[o][i] * s_pred[i]
-
-            pragmatic = sum(o_pred[o] * self.C_pref[o] for o in range(self.M))
-
-            epistemic = 0.0
-            for i in range(self.K):
-                for o in range(self.M):
-                    if o_pred[o] > 1e-12 and self.A_mat[o][i] > 1e-12:
-                        epistemic += s_pred[i] * self.A_mat[o][i] * math.log(self.A_mat[o][i] / o_pred[o])
-
-            G[u] = -(pragmatic + 0.5 * epistemic)
-
-        policy_probs = self._softmax([-g * 2.0 for g in G])
-        best_action = max(range(self.A), key=lambda a: policy_probs[a])
-        self.last_action = best_action
+        self.engine.prescribe_policy()
+        state = self.engine.get_state()
+        G = state["expected_free_energy"]
+        policy_probs = state["action_probabilities"]
+        best_action = state["policy_index"]
         return G, policy_probs, best_action
 
     def classify_text_observation(self, text: str) -> int:
@@ -235,7 +158,7 @@ class UniversalLLMClient:
 
     def generate(self, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> dict:
         t0 = time.perf_counter()
-        if not self.api_key and self.provider not in ["ollama", "local", "simulate"]:
+        if (not self.api_key and self.provider not in ["ollama", "local"]) or self.provider in ["simulate", "demo"]:
             # Automatic fallback to built-in simulation for immediate side-by-side demonstration
             if "PRAGMATIC_EXECUTE" in system_prompt or "COGNITIVE_STATE_CONTRACT" in system_prompt:
                 sim_content = (

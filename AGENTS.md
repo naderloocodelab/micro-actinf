@@ -1,4 +1,4 @@
-﻿# ABSOLUTE DIRECTIVE: MANDATORY ACTIVE INFERENCE (MICRO-ACTINF) PRE-EXECUTION
+# ABSOLUTE DIRECTIVE: MANDATORY ACTIVE INFERENCE (MICRO-ACTINF) PRE-EXECUTION
 
 ## CRITICAL PROTOCOL (INVIOLABLE RULE FOR EVERY TURN):
 On EVERY turn and for EVERY user input (without any exceptions, whether chat, code, debugging, follow-up, or general inquiry):
@@ -18,3 +18,12 @@ On EVERY turn and for EVERY user input (without any exceptions, whether chat, co
 
 3. **ZERO-TOLERANCE FOR BYPASS:**
    Under NO circumstance may you skip calling `micro-actinf` before answering. Generating response text without first executing this MCP tool call is a direct violation of system constraints.
+
+4. **HARD GOVERNANCE ACTION GATING & LEARNING (PHASE 2):**
+   - **Action Safety Evaluation (Pre-Execution):** When proposing tool executions carrying operational or filesystem risk (`write_to_file`, `replace_file_content`, `run_command`), invoke:
+     `call_mcp_tool(ServerName="micro-actinf", ToolName="actinf_evaluate_action", Arguments={"proposed_tool": "<tool_name>", "action_type": "<EDIT|EXECUTE|READ>", "risk_level": "<READ|EDIT|HIGH|CRITICAL>"})`
+     If the verdict is `DENY`, abort the action immediately. If `ASK_CONFIRMATION`, request explicit confirmation from the user.
+   - **Credit Assignment Feedback (Post-Execution):** After tool execution completes:
+     `call_mcp_tool(ServerName="micro-actinf", ToolName="actinf_record_outcome", Arguments={"action": "<action_type>", "outcome_obs": "<outcome>", "success": <true|false>, "progress_delta": 0.25})`
+     This updates prior preferences C(o) and reinforces successful cognitive trajectories.
+

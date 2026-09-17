@@ -14,6 +14,12 @@ include_directories(include)
 
 # Static Library
 add_library(micro_actinf STATIC src/micro_actinf.c)
+target_compile_definitions(micro_actinf PUBLIC MICRO_ACTINF_STATIC)
+
+# Shared Library
+add_library(micro_actinf_shared SHARED src/micro_actinf.c)
+set_target_properties(micro_actinf_shared PROPERTIES OUTPUT_NAME "micro_actinf")
+target_compile_definitions(micro_actinf_shared PRIVATE MICRO_ACTINF_BUILD_DLL)
 
 # Unit Tests
 add_executable(test_c_core tests/test_c_core.c)
@@ -31,4 +37,6 @@ if(NOT MSVC)
     target_link_libraries(test_c_core PRIVATE m)
     target_link_libraries(game_ai_bot PRIVATE m)
     target_link_libraries(comparative_test PRIVATE m)
+    target_link_libraries(micro_actinf_shared PRIVATE m)
 endif()
+

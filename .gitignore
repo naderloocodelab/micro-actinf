@@ -1,4 +1,4 @@
-﻿.env
+.env
 build/
 bin/
 *.exe
@@ -7,3 +7,6 @@ bin/
 *.log
 __pycache__/
 *.pyc
+*.dll
+*.so
+*.dylib
