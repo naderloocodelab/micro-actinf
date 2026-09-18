@@ -101,6 +101,8 @@ typedef struct {
     uint8_t state_dom;
     uint8_t action;
     uint8_t obs;
+    uint32_t signature;     /* FNV-1a hash of tool, arguments, observation, failure status */
+    float progress_delta;  /* Progress increment at this step */
     float entropy;
 } actinf_step_record_t;
 
@@ -161,6 +163,11 @@ typedef struct {
     uint8_t history_count;
     uint8_t consecutive_loops;
     bool loop_detected;
+
+    /* Goal State Tracking & Context Drift Mitigation */
+    uint8_t target_state;       /* Target convergence regime (default: 4=VERIFICATION or 5=DECISION) */
+    float goal_progress;        /* Goal achievement fraction [0.0, 1.0] */
+    float goal_drift;           /* Current trajectory divergence from target goal */
 
     /* Runtime Progress & Diagnostics */
     float progress_index;       /* Cumulative goal alignment index [0.0, 1.0] */
@@ -267,6 +274,53 @@ MICRO_ACTINF_API void micro_actinf_sync_counts_from_matrices(micro_actinf_t *age
  * @brief Reset agent belief state to uniform prior while preserving learned matrices.
  */
 MICRO_ACTINF_API void micro_actinf_reset_state(micro_actinf_t *agent);
+
+/**
+ * @brief Turn-level reset: resets only current belief s to uniform prior.
+ */
+MICRO_ACTINF_API void micro_actinf_reset_belief(micro_actinf_t *agent);
+
+/**
+ * @brief Episode-level reset: resets belief, history buffer, and loop flags, but preserves learned Dirichlet parameters.
+ */
+MICRO_ACTINF_API void micro_actinf_reset_episode(micro_actinf_t *agent);
+
+/**
+ * @brief Factory-level reset: complete reset restoring calibrated default parameters.
+ */
+MICRO_ACTINF_API void micro_actinf_reset_model(micro_actinf_t *agent);
+
+/**
+ * @brief Set target goal state for context drift mitigation.
+ */
+MICRO_ACTINF_API void micro_actinf_set_goal(micro_actinf_t *agent, uint8_t target_state);
+
+/**
+ * @brief Compute context drift metric relative to target goal.
+ */
+MICRO_ACTINF_API float micro_actinf_get_goal_drift(const micro_actinf_t *agent);
+
+/**
+ * @brief Fast 32-bit FNV-1a hash of tool name, arguments, observation, and status.
+ */
+MICRO_ACTINF_API uint32_t micro_actinf_hash_signature(const char *str);
+
+/**
+ * @brief Ingest observation with execution signature and progress delta for advanced loop detection.
+ */
+MICRO_ACTINF_API void micro_actinf_step_with_signature(micro_actinf_t *agent,
+                                                       uint8_t obs,
+                                                       uint32_t signature,
+                                                       float progress_delta);
+
+/**
+ * @brief Evaluate action with signature awareness to prevent identical stuck tool calls.
+ */
+MICRO_ACTINF_API actinf_verdict_t micro_actinf_evaluate_action_with_signature(micro_actinf_t *agent,
+                                                                              uint8_t proposed_action,
+                                                                              actinf_risk_level_t risk,
+                                                                              float confidence_threshold,
+                                                                              uint32_t signature);
 
 /**
  * @brief Recompute cached column entropies for matrix A.

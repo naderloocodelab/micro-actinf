@@ -58,6 +58,18 @@ TOOL_DEFINITIONS = [
                 "context_attributes": {
                     "type": "string",
                     "description": "Optional JSON string with additional metadata (e.g. failure_signal, risk, context_pressure)."
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Optional tool name for execution signature tracking."
+                },
+                "args": {
+                    "type": "object",
+                    "description": "Optional tool arguments for execution signature tracking."
+                },
+                "progress_delta": {
+                    "type": "number",
+                    "description": "Progress delta associated with this observation step."
                 }
             },
             "required": ["obs_type"]
@@ -65,7 +77,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "actinf_get_state",
-        "description": "Get current cognitive regime, belief distribution, uncertainty, loop status, and progress metrics.",
+        "description": "Get current cognitive regime, belief distribution, uncertainty, goal tracking, and loop status.",
         "inputSchema": {
             "type": "object",
             "properties": {}
@@ -81,13 +93,17 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "actinf_evaluate_action",
-        "description": "Hard Governor Gate: Evaluates a proposed tool/action before execution against cognitive regime and safety risk model.",
+        "description": "Hard Governor Gate: Evaluates proposed tool and arguments against cognitive regime and automated semantic safety model.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "proposed_tool": {
                     "type": "string",
                     "description": "Name of the tool the agent intends to call (e.g. write_to_file, run_command, replace_file_content)."
+                },
+                "tool_args": {
+                    "type": "object",
+                    "description": "Actual arguments to the tool (e.g. CommandLine, TargetFile) for semantic risk inspection."
                 },
                 "action_type": {
                     "type": "string",
@@ -97,7 +113,7 @@ TOOL_DEFINITIONS = [
                 "risk_level": {
                     "type": "string",
                     "enum": ["READ", "ANALYZE", "TEST", "EDIT", "EXECUTE", "DESTRUCTIVE"],
-                    "description": "Risk profile of the action."
+                    "description": "Optional self-reported risk profile (will be verified by semantic classifier)."
                 },
                 "confidence_threshold": {
                     "type": "number",
@@ -145,11 +161,31 @@ TOOL_DEFINITIONS = [
         }
     },
     {
-        "name": "actinf_reset",
-        "description": "Reset belief state to uniform prior while preserving learned Dirichlet transition and observation parameters.",
+        "name": "actinf_set_goal",
+        "description": "Set target convergence goal regime and compute trajectory drift metric.",
         "inputSchema": {
             "type": "object",
-            "properties": {}
+            "properties": {
+                "target_state": {
+                    "type": "string",
+                    "description": "Target goal regime name (e.g. VERIFICATION, DECISION, CODE_GENERATION)."
+                }
+            },
+            "required": ["target_state"]
+        }
+    },
+    {
+        "name": "actinf_reset",
+        "description": "Reset cognitive state (turn belief, episode history, or full model re-initialization).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reset_type": {
+                    "type": "string",
+                    "enum": ["belief", "episode", "model"],
+                    "description": "Granular reset scope: 'belief' (current belief vector only), 'episode' (belief and history, preserving learning), or 'model' (full factory reset)."
+                }
+            }
         }
     }
 ]
@@ -165,7 +201,10 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 ctx = json.loads(args["context_attributes"])
             except Exception:
                 ctx = None
-        return governor.observe(obs_type, ctx)
+        tool = args.get("tool")
+        tool_args = args.get("args")
+        delta = float(args.get("progress_delta", 0.0))
+        return governor.observe(obs_type, ctx, tool=tool, args=tool_args, progress_delta=delta)
 
     elif tool_name == "actinf_get_state":
         return governor.get_state()
@@ -176,9 +215,10 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     elif tool_name == "actinf_evaluate_action":
         tool = args.get("proposed_tool", "unknown")
         act_type = args.get("action_type", "PRAGMATIC_EXECUTE")
-        risk = args.get("risk_level", "EDIT")
+        risk = args.get("risk_level")
         conf_th = float(args.get("confidence_threshold", 0.80))
-        return governor.evaluate_action(tool, act_type, risk, conf_th)
+        tool_args = args.get("tool_args") or args.get("args")
+        return governor.evaluate_action(tool, act_type, risk, conf_th, tool_args=tool_args)
 
     elif tool_name == "actinf_record_outcome":
         act = args.get("action", "PRAGMATIC_EXECUTE")
@@ -187,8 +227,17 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         delta = float(args.get("progress_delta", 0.10))
         return governor.record_outcome(act, outcome_obs, success, delta)
 
+    elif tool_name == "actinf_set_goal":
+        target = args.get("target_state", "VERIFICATION")
+        return governor.set_goal(target)
+
     elif tool_name == "actinf_reset":
-        return governor.reset()
+        rtype = args.get("reset_type", "episode")
+        if rtype == "belief":
+            return governor.reset_belief()
+        elif rtype == "model":
+            return governor.reset_model()
+        return governor.reset_episode()
 
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
@@ -200,14 +249,24 @@ try:
     mcp = FastMCP("micro-actinf")
 
     @mcp.tool()
-    def actinf_observe(obs_type: str, context_attributes: str = "") -> str:
-        """Feed sensory observation into the Active Inference POMDP filter."""
-        res = execute_tool("actinf_observe", {"obs_type": obs_type, "context_attributes": context_attributes})
+    def actinf_observe(obs_type: str,
+                       context_attributes: str = "",
+                       tool: Optional[str] = None,
+                       args: Optional[Dict[str, Any]] = None,
+                       progress_delta: float = 0.0) -> str:
+        """Feed sensory observation into the Active Inference POMDP filter with signature and progress tracking."""
+        res = execute_tool("actinf_observe", {
+            "obs_type": obs_type,
+            "context_attributes": context_attributes,
+            "tool": tool,
+            "args": args,
+            "progress_delta": progress_delta
+        })
         return json.dumps(res, indent=2)
 
     @mcp.tool()
     def actinf_get_state() -> str:
-        """Get current cognitive regime, belief distribution, uncertainty, and loop status."""
+        """Get current cognitive regime, belief distribution, uncertainty, goal tracking, and loop status."""
         return json.dumps(execute_tool("actinf_get_state", {}), indent=2)
 
     @mcp.tool()
@@ -218,14 +277,16 @@ try:
     @mcp.tool()
     def actinf_evaluate_action(proposed_tool: str,
                               action_type: str = "PRAGMATIC_EXECUTE",
-                              risk_level: str = "EDIT",
-                              confidence_threshold: float = 0.80) -> str:
-        """Hard Governor Gate: Evaluates proposed LLM action against safety risk model (ALLOW, MODIFY, ASK_CONFIRMATION, DENY)."""
+                              risk_level: Optional[str] = None,
+                              confidence_threshold: float = 0.80,
+                              tool_args: Optional[Dict[str, Any]] = None) -> str:
+        """Hard Governor Gate: Evaluates proposed LLM action against automated semantic risk model (ALLOW, MODIFY, ASK_CONFIRMATION, DENY)."""
         args = {
             "proposed_tool": proposed_tool,
             "action_type": action_type,
             "risk_level": risk_level,
-            "confidence_threshold": confidence_threshold
+            "confidence_threshold": confidence_threshold,
+            "tool_args": tool_args
         }
         return json.dumps(execute_tool("actinf_evaluate_action", args), indent=2)
 
@@ -244,9 +305,14 @@ try:
         return json.dumps(execute_tool("actinf_record_outcome", args), indent=2)
 
     @mcp.tool()
-    def actinf_reset() -> str:
-        """Reset belief state to uniform prior while preserving learned parameters."""
-        return json.dumps(execute_tool("actinf_reset", {}), indent=2)
+    def actinf_set_goal(target_state: str = "VERIFICATION") -> str:
+        """Set target convergence goal regime and compute trajectory drift metric."""
+        return json.dumps(execute_tool("actinf_set_goal", {"target_state": target_state}), indent=2)
+
+    @mcp.tool()
+    def actinf_reset(reset_type: str = "episode") -> str:
+        """Reset belief state (scope: 'belief', 'episode', or 'model')."""
+        return json.dumps(execute_tool("actinf_reset", {"reset_type": reset_type}), indent=2)
 
     def main():
         mcp.run(transport="stdio")

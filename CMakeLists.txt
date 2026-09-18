@@ -25,6 +25,8 @@ target_compile_definitions(micro_actinf_shared PRIVATE MICRO_ACTINF_BUILD_DLL)
 add_executable(test_c_core tests/test_c_core.c)
 target_link_libraries(test_c_core PRIVATE micro_actinf)
 
+add_executable(test_fast_log_accuracy tests/test_fast_log_accuracy.c)
+
 # Game AI Example
 add_executable(game_ai_bot examples/game_ai_bot.c)
 target_link_libraries(game_ai_bot PRIVATE micro_actinf)
@@ -35,6 +37,7 @@ target_link_libraries(comparative_test PRIVATE micro_actinf)
 
 if(NOT MSVC)
     target_link_libraries(test_c_core PRIVATE m)
+    target_link_libraries(test_fast_log_accuracy PRIVATE m)
     target_link_libraries(game_ai_bot PRIVATE m)
     target_link_libraries(comparative_test PRIVATE m)
     target_link_libraries(micro_actinf_shared PRIVATE m)

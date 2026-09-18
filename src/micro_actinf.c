@@ -136,6 +136,9 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
     agent->progress_index = 0.0f;
     agent->consecutive_loops = 0;
     agent->loop_detected = false;
+    agent->target_state = (agent->num_states >= 5) ? 4 : (agent->num_states - 1);
+    agent->goal_progress = 0.0f;
+    agent->goal_drift = 1.0f;
 
     /* Initialize default online Dirichlet learning configuration */
     agent->learning_cfg.learning_rate_a = 0.05f;
@@ -224,19 +227,65 @@ void micro_actinf_init(micro_actinf_t *agent, uint8_t states, uint8_t obs, uint8
     agent->entropy_velocity = 0.0f;
 }
 
-void micro_actinf_reset_state(micro_actinf_t *agent) {
+void micro_actinf_reset_belief(micro_actinf_t *agent) {
     if (!agent) return;
     float p_s = 1.0f / (float)agent->num_states;
     for (uint8_t s = 0; s < agent->num_states; s++) {
         agent->s[s] = p_s;
         agent->s_prev[s] = p_s;
     }
+    agent->last_entropy = micro_actinf_shannon_entropy(agent);
+    agent->entropy_velocity = 0.0f;
+    if (agent->target_state < agent->num_states) {
+        agent->goal_progress = agent->s[agent->target_state];
+        agent->goal_drift = 1.0f - agent->goal_progress;
+    }
+}
+
+void micro_actinf_reset_episode(micro_actinf_t *agent) {
+    if (!agent) return;
+    micro_actinf_reset_belief(agent);
     agent->history_count = 0;
     agent->history_idx = 0;
     agent->consecutive_loops = 0;
     agent->loop_detected = false;
-    agent->last_entropy = micro_actinf_shannon_entropy(agent);
-    agent->entropy_velocity = 0.0f;
+    agent->progress_index = 0.0f;
+    agent->last_action = 0;
+}
+
+void micro_actinf_reset_model(micro_actinf_t *agent) {
+    if (!agent) return;
+    micro_actinf_init(agent, agent->num_states, agent->num_obs, agent->num_actions);
+}
+
+void micro_actinf_reset_state(micro_actinf_t *agent) {
+    micro_actinf_reset_episode(agent);
+}
+
+void micro_actinf_set_goal(micro_actinf_t *agent, uint8_t target_state) {
+    if (!agent) return;
+    if (target_state >= agent->num_states) {
+        target_state = agent->num_states - 1;
+    }
+    agent->target_state = target_state;
+    agent->goal_progress = agent->s[target_state];
+    agent->goal_drift = 1.0f - agent->goal_progress;
+}
+
+float micro_actinf_get_goal_drift(const micro_actinf_t *agent) {
+    if (!agent || agent->target_state >= agent->num_states) return 0.0f;
+    return (1.0f - agent->s[agent->target_state]);
+}
+
+uint32_t micro_actinf_hash_signature(const char *str) {
+    if (!str) return 0;
+    uint32_t hash = 2166136261u;
+    const unsigned char *p = (const unsigned char *)str;
+    while (*p) {
+        hash ^= (uint32_t)(*p++);
+        hash *= 16777619u;
+    }
+    return hash;
 }
 
 uint8_t micro_actinf_get_dominant_state(const micro_actinf_t *agent, float *out_confidence) {
@@ -255,11 +304,14 @@ uint8_t micro_actinf_get_dominant_state(const micro_actinf_t *agent, float *out_
     return best_s;
 }
 
-void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
+void micro_actinf_step_with_signature(micro_actinf_t *agent,
+                                       uint8_t obs,
+                                       uint32_t signature,
+                                       float progress_delta) {
     if (!agent || obs >= agent->num_obs) return;
 
     const uint8_t n_states = agent->num_states;
-    const uint8_t last_act = agent->last_action;
+    const uint8_t last_act = (agent->last_action < agent->num_actions) ? agent->last_action : 0;
     const float alpha = agent->alpha_prior;
     const float uniform_p = 1.0f / (float)n_states;
 
@@ -271,9 +323,7 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
         s_prev[i] = s[i];
     }
 
-    /* 1. Prior state prediction with adaptive recency decay:
-     *    s_prior[i] = (1 - alpha) * Sum_j B(last_act)[i][j] * s_prev[j] + alpha * (1/K)
-     */
+    /* 1. Prior state prediction with adaptive recency decay */
     float s_prior[ACTINF_MAX_STATES];
     for (uint8_t i = 0; i < n_states; i++) {
         float val = 0.0f;
@@ -319,12 +369,23 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
     agent->entropy_velocity = current_entropy - agent->last_entropy;
     agent->last_entropy = current_entropy;
 
-    /* 4. Loop & Inertia Detection Tracker */
+    /* 4. Update goal tracking & drift metrics */
+    if (agent->target_state < agent->num_states) {
+        agent->goal_progress = agent->s[agent->target_state];
+        agent->goal_drift = 1.0f - agent->goal_progress;
+    }
+    agent->progress_index += progress_delta;
+    if (agent->progress_index > 1.0f) agent->progress_index = 1.0f;
+    if (agent->progress_index < 0.0f) agent->progress_index = 0.0f;
+
+    /* 5. Loop & Fingerprint Signature Tracking */
     uint8_t dom_s = micro_actinf_get_dominant_state(agent, NULL);
     actinf_step_record_t *rec = &agent->history[agent->history_idx];
     rec->state_dom = dom_s;
     rec->action = last_act;
     rec->obs = obs;
+    rec->signature = signature;
+    rec->progress_delta = progress_delta;
     rec->entropy = current_entropy;
 
     agent->history_idx = (agent->history_idx + 1) % ACTINF_HISTORY_LEN;
@@ -332,8 +393,23 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
         agent->history_count++;
     }
 
-    /* Check if the same (state, action) pair has occurred repeatedly with no entropy change */
-    if (agent->history_count >= 3) {
+    /* Enhanced loop detection:
+     * Check (a) signature repeat with zero progress, OR (b) state-action repetition with flat entropy
+     */
+    bool loop_condition = false;
+    if (signature != 0 && agent->history_count >= 2) {
+        uint8_t sig_matches = 0;
+        for (uint8_t h = 0; h < agent->history_count; h++) {
+            if (agent->history[h].signature == signature && agent->history[h].progress_delta <= 0.001f) {
+                sig_matches++;
+            }
+        }
+        if (sig_matches >= 2) {
+            loop_condition = true;
+        }
+    }
+
+    if (!loop_condition && agent->history_count >= 3) {
         uint8_t matches = 0;
         for (uint8_t h = 0; h < agent->history_count; h++) {
             if (agent->history[h].state_dom == dom_s && agent->history[h].action == last_act) {
@@ -341,15 +417,23 @@ void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
             }
         }
         if (matches >= 3 && fabsf(agent->entropy_velocity) < 0.05f) {
-            agent->consecutive_loops++;
-            agent->loop_detected = true;
-        } else {
-            agent->loop_detected = false;
-            if (agent->consecutive_loops > 0) agent->consecutive_loops--;
+            loop_condition = true;
         }
     }
 
+    if (loop_condition) {
+        agent->consecutive_loops++;
+        agent->loop_detected = true;
+    } else {
+        agent->loop_detected = false;
+        if (agent->consecutive_loops > 0) agent->consecutive_loops--;
+    }
+
     agent->step_count++;
+}
+
+void micro_actinf_step(micro_actinf_t *agent, uint8_t obs) {
+    micro_actinf_step_with_signature(agent, obs, 0, 0.0f);
 }
 
 uint8_t micro_actinf_select_action(micro_actinf_t *agent) {
@@ -480,15 +564,27 @@ uint8_t micro_actinf_select_action(micro_actinf_t *agent) {
     return best_u;
 }
 
-actinf_verdict_t micro_actinf_evaluate_action(micro_actinf_t *agent,
-                                              uint8_t proposed_action,
-                                              actinf_risk_level_t risk,
-                                              float confidence_threshold) {
+actinf_verdict_t micro_actinf_evaluate_action_with_signature(micro_actinf_t *agent,
+                                                              uint8_t proposed_action,
+                                                              actinf_risk_level_t risk,
+                                                              float confidence_threshold,
+                                                              uint32_t signature) {
     if (!agent || proposed_action >= agent->num_actions) {
         return ACTINF_VERDICT_DENY;
     }
 
-    /* 1. Loop / Inertia Check: Deny repeat action if trapped in loop */
+    /* 1. Signature Duplicate / Stuck Loop Gating:
+     * If this exact tool/command signature was recently run with zero/stalled progress, DENY repeat immediately.
+     */
+    if (signature != 0 && agent->history_count > 0) {
+        for (uint8_t h = 0; h < agent->history_count; h++) {
+            if (agent->history[h].signature == signature && agent->history[h].progress_delta <= 0.001f) {
+                return ACTINF_VERDICT_DENY;
+            }
+        }
+    }
+
+    /* 2. Loop / Inertia Check: Deny repeat action if trapped in loop */
     if (agent->loop_detected && proposed_action == agent->last_action) {
         return ACTINF_VERDICT_DENY;
     }
@@ -499,26 +595,33 @@ actinf_verdict_t micro_actinf_evaluate_action(micro_actinf_t *agent,
     uint8_t optimal_action = micro_actinf_select_action(agent);
     agent->last_action = saved_last_action; /* Preserve previous executed action */
 
-    /* 2. Destructive Risk Gating: Destructive operations ALWAYS require confirmation */
+    /* 3. Destructive Risk Gating: Destructive operations ALWAYS require confirmation */
     if (risk >= ACTINF_RISK_DESTRUCTIVE) {
         return ACTINF_VERDICT_ASK_CONFIRMATION;
     }
 
-    /* 3. Execution / Script Risk Gating */
+    /* 4. Execution / Script Risk Gating */
     if (risk == ACTINF_RISK_EXECUTE) {
         if (conf < confidence_threshold) {
             return ACTINF_VERDICT_ASK_CONFIRMATION;
         }
     }
 
-    /* 4. Cognitive Regime Compatibility:
+    /* 5. Cognitive Regime Compatibility:
      * If agent is in EXPLORATION (0) or DEBUGGING (3), high-risk write/edit should be modified or confirmed.
      */
     if (dom_s == 0 && (risk == ACTINF_RISK_EDIT || risk == ACTINF_RISK_EXECUTE)) {
         return ACTINF_VERDICT_MODIFY;
     }
 
-    /* If proposed action matches optimal EFE policy */
+    /* 6. Epistemic Uncertainty Gating:
+     * When entropy is very high (> 1.25 nats), immediate direct code execution without prior analysis is modified.
+     */
+    if (agent->last_entropy > 1.25f && proposed_action == 1 && risk >= ACTINF_RISK_EDIT) {
+        return ACTINF_VERDICT_MODIFY;
+    }
+
+    /* 7. If proposed action matches optimal EFE policy */
     if (proposed_action == optimal_action) {
         return ACTINF_VERDICT_ALLOW;
     }
@@ -529,6 +632,13 @@ actinf_verdict_t micro_actinf_evaluate_action(micro_actinf_t *agent,
     }
 
     return ACTINF_VERDICT_ALLOW;
+}
+
+actinf_verdict_t micro_actinf_evaluate_action(micro_actinf_t *agent,
+                                              uint8_t proposed_action,
+                                              actinf_risk_level_t risk,
+                                              float confidence_threshold) {
+    return micro_actinf_evaluate_action_with_signature(agent, proposed_action, risk, confidence_threshold, 0);
 }
 
 void micro_actinf_record_outcome(micro_actinf_t *agent,
